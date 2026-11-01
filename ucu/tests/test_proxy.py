@@ -193,7 +193,7 @@ class ServerTest(unittest.TestCase):
 
     def test_looks_first_when_a_chat_acts_without_one(self):
         self.server.act({"do": "click", "on": 1})
-        self.assertEqual(self.server.engine_calls()[0][0], "snapshot")
+        self.assertEqual(self.server.engine_calls()[1][0], "snapshot")
 
     def test_turns_each_kind_of_step_into_its_command(self):
         self.server.look()
@@ -240,6 +240,15 @@ class ServerTest(unittest.TestCase):
     def test_says_which_windows_there_are_when_a_title_matches_none(self):
         reply = self.server.look(app="Many", window="Three")
         self.assertIn('Windows: "One", "Two"', self.server.text(reply))
+
+    def test_gives_the_chat_an_engine_session_of_its_own_and_ends_it(self):
+        self.server.look()
+        lines = [json.loads(line) for line in self.server.engine_log.read_text().splitlines()]
+        self.assertEqual(lines[0]["args"], ["session", "start"])
+        self.assertEqual(lines[1]["session"], "run-1")
+        self.server.process.stdin.close()
+        self.server.process.wait(10)
+        self.assertIn(["session", "end", "run-1"], self.server.engine_calls("session"))
 
     def test_says_how_to_get_the_engine_when_it_is_missing(self):
         (Path(self.server.home.name) / ".local/bin/ucu-engine").unlink()

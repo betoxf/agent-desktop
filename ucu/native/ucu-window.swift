@@ -1,8 +1,7 @@
 // ucu-window: windows and quiet launches for ucu.
 //
 // This helper uses the Accessibility API to list an app's windows
-// and to make one of them the main window (optionally leaving full screen first), so the next
-// `cua.getApp(...)` targets it.
+// and to make one of them the main window (optionally leaving full screen first).
 //
 //   ucu-window list [app]
 //   ucu-window focus <app> <title substring> [--unfullscreen] [--activate]
@@ -11,7 +10,7 @@
 //
 // <app> is a display name or bundle id of a running app; `list` without one covers every app.
 // `focus` un-minimizes the window and makes it the app's main window; it shows the app and brings
-// it to the front only with --activate. `watch` is what the proxy runs next to cua_repl: see Watcher.
+// it to the front only with --activate. `watch` is what the server runs next to the engine: see Watcher.
 // Needs Accessibility permission for the process that runs it (Claude Code).
 // Build: `ucu install` (swiftc -O native/ucu-window.swift -o ~/.local/bin/ucu-window)
 import AppKit
@@ -178,7 +177,7 @@ func contents(of window: AXUIElement) -> (text: String, buttons: [String]) {
 // moves them back to where they were. The classes are private, so they are looked up at run time: without them
 // `open()` returns nil and apps stay hidden or are shown behind the user's windows.
 final class AgentDesktop {
-    static let width: UInt = 1920, height: UInt = 1200, slots = 1...8
+    static let width: UInt = 1920, height: UInt = 1200, slots = 1...8, vendor: UInt32 = 0x55C1
     static let modeSelector = NSSelectorFromString("initWithWidth:height:refreshRate:")
     static let settle = 0.6
 
@@ -187,6 +186,14 @@ final class AgentDesktop {
     var slot: UInt32?
 
     // Screens are remembered by serial number, so reusing a few numbers keeps macOS's list of them short.
+    // Whether a place is on an agent's desktop, or on no screen at all, where nobody would see it.
+    static func isOutOfSight(_ point: CGPoint) -> Bool {
+        var display: CGDirectDisplayID = 0
+        var count: UInt32 = 0
+        guard CGGetDisplaysWithPoint(point, 1, &display, &count) == .success, count > 0 else { return true }
+        return CGDisplayVendorNumber(display) == vendor
+    }
+
     func takeSlot() -> UInt32? {
         let folder = NSHomeDirectory() + "/Library/Application Support/ucu"
         try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
@@ -212,15 +219,15 @@ final class AgentDesktop {
         descriptor.setValue(Self.width * 2, forKey: "maxPixelsWide")
         descriptor.setValue(Self.height * 2, forKey: "maxPixelsHigh")
         descriptor.setValue(NSValue(size: NSSize(width: 520, height: 325)), forKey: "sizeInMillimeters")
-        descriptor.setValue(0x55C1, forKey: "productID")
-        descriptor.setValue(0x55C1, forKey: "vendorID")
+        descriptor.setValue(Self.vendor, forKey: "productID")
+        descriptor.setValue(Self.vendor, forKey: "vendorID")
         descriptor.setValue(serial, forKey: "serialNum")
         descriptor.setValue(DispatchQueue.main, forKey: "queue")
         typealias ModeInit = @convention(c) (AnyObject, Selector, UInt, UInt, Double) -> Unmanaged<AnyObject>
         let allocated = (modeClass as AnyObject).perform(NSSelectorFromString("alloc")).takeUnretainedValue()
         let start = unsafeBitCast(implementation, to: ModeInit.self)
         let mode = start(allocated, Self.modeSelector, Self.width, Self.height, 30)
-        settings.setValue(1, forKey: "hiDPI")  // the engine's screenshots and coordinates assume Retina
+        settings.setValue(1, forKey: "hiDPI")  // screenshots and coordinates assume Retina
         settings.setValue([mode.takeUnretainedValue()], forKey: "modes")
         typealias Apply = @convention(c) (AnyObject, Selector, AnyObject) -> Bool
         let apply = NSSelectorFromString("applySettings:")
@@ -274,7 +281,7 @@ final class AgentCursor {
     static let size: CGFloat = 126, tick = 1.0 / 120, linger = 20.0, fadeTime = 0.25
     static let bend: CGFloat = 0.16, tiltLimit: CGFloat = 0.42, tiltEase = 0.07, restHeading = 3 * CGFloat.pi / 4
 
-    var color: NSColor?  // without one from the proxy, the engine's cursor stays
+    var color: NSColor?  // comes from the server
     var timer: Timer?
     var panel: NSPanel?
     let arrow = CAShapeLayer()
@@ -285,7 +292,7 @@ final class AgentCursor {
     var path: (start: CGPoint, control: CGPoint, end: CGPoint, began: Date, time: Double, moving: Bool)?
 
     func move(to point: CGPoint, over apps: [NSRunningApplication], busy: @escaping () -> Bool) {
-        guard color != nil, let window = topWindow(at: point, of: apps) else { return }
+        guard color != nil, !AgentDesktop.isOutOfSight(point), let window = topWindow(at: point, of: apps) else { return }
         restAt = Date() + Self.linger
         head(to: point, over: window, Date())
         guard timer == nil else { return }
@@ -415,7 +422,7 @@ final class AgentCursor {
         view.wantsLayer = true
         panel.contentView = view
         let tint = color ?? .gray
-        let shadow = CAGradientLayer()  // these stops are the engine's shadow, measured from a screenshot of it
+        let shadow = CAGradientLayer()  // a soft shadow that fades out at about 33 points
         shadow.type = .radial
         shadow.frame = bounds
         shadow.startPoint = CGPoint(x: 0.5, y: 0.5)
@@ -536,7 +543,7 @@ final class Watcher {
             bringBack(app)
         }
         if let busy = command["busy"] as? Bool {
-            busyUntil = Date() + (busy ? Self.longestCall : Self.quietTail)  // no end comes if cua_repl crashes
+            busyUntil = Date() + (busy ? Self.longestCall : Self.quietTail)  // no end comes if the server crashes
             if busy {
                 busySince = Date()
                 front = NSWorkspace.shared.frontmostApplication
@@ -570,7 +577,7 @@ final class Watcher {
     func open(_ query: String, deny: [String], id: Any) {
         var app = running(query)
         guard let url = app?.bundleURL ?? applicationURL(query) else {
-            emit(["id": id, "state": app == nil ? "unknown" : "running"])  // cua_repl may still find it
+            emit(["id": id, "state": app == nil ? "unknown" : "running"])  // the engine may still find it
             return
         }
         let bundle = Bundle(url: url), info = bundle?.infoDictionary
@@ -588,7 +595,7 @@ final class Watcher {
         }
         if let app {
             if app.activationPolicy == .regular, !Self.hasWindows(app) {
-                launch(url, id: id, state: "reopened", limit: 2)  // the engine fails on an app without a window
+                launch(url, id: id, state: "reopened", limit: 2)  // the engine needs a window to work on
                 return
             }
             emit(["id": id, "state": "running", "active": app.isActive])
@@ -608,7 +615,7 @@ final class Watcher {
         }
     }
 
-    // Some apps ignore `hides` or show themselves once their window is up (Blender), and cua_repl needs that
+    // Some apps ignore `hides` or show themselves once their window is up (Blender), and the engine needs that
     // window, so this hides the app until it has one, and for a moment after in case it shows itself again.
     func keepHidden(_ launched: NSRunningApplication?, id: Any?, state: String = "opened",
                     limit: Double = noWindowLimit) {
@@ -824,7 +831,7 @@ final class Watcher {
 
     // MARK: focus
 
-    // The HID state only counts real input, not the events cua_repl sends to an app. Any click, key or swipe just
+    // The HID state only counts real input, not the events the engine sends to an app. Any click, key or swipe just
     // before may be the user switching apps themselves, and undoing that would be worse than leaving a stray app up.
     static func userIsActive(within seconds: Double = inputWindow) -> Bool {
         let swipe = CGEventType(rawValue: 29)!  // a trackpad gesture, which can change Spaces; it has no name here

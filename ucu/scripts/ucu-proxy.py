@@ -601,13 +601,39 @@ class ToolError(Exception):
 
 
 class Engine:
-    """agent-desktop, run once per command."""
+    """agent-desktop, run once per command. Each chat has an engine session, and with it an engine process of its own
+    that keeps the app connections, so that chats don't wait for each other."""
 
-    @staticmethod
-    def run(*arguments, timeout=ENGINE_TIMEOUT):
+    session = None
+    lock = threading.Lock()
+
+    @classmethod
+    def environment(cls):
+        with cls.lock:
+            if cls.session is None:
+                try:
+                    done = subprocess.run([str(ENGINE), "session", "start"], capture_output=True, text=True,
+                                          timeout=ENGINE_TIMEOUT, stdin=subprocess.DEVNULL)
+                    cls.session = json.loads(done.stdout)["data"]["activation"]["value"]
+                except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+                    return None  # the shared engine process works too
+        return {**os.environ, "AGENT_DESKTOP_SESSION": cls.session}
+
+    @classmethod
+    def end_session(cls):
+        if cls.session:
+            for action in (("end", cls.session), ("gc",)):
+                try:
+                    subprocess.run([str(ENGINE), "session", *action], capture_output=True, timeout=ENGINE_TIMEOUT,
+                                   stdin=subprocess.DEVNULL)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+
+    @classmethod
+    def run(cls, *arguments, timeout=ENGINE_TIMEOUT):
         try:
             done = subprocess.run([str(ENGINE), *arguments], capture_output=True, text=True, timeout=timeout,
-                                  stdin=subprocess.DEVNULL)
+                                  stdin=subprocess.DEVNULL, env=cls.environment())
         except subprocess.TimeoutExpired:
             raise ToolError("The app didn't answer in time.") from None
         except OSError as error:
@@ -617,7 +643,7 @@ class Engine:
         except ValueError:
             raise ToolError((done.stderr or done.stdout).strip()[:500] or "ucu-engine gave no answer") from None
         if not reply.get("ok"):
-            raise ToolError(Engine.explain(reply.get("error") or {}))
+            raise ToolError(cls.explain(reply.get("error") or {}))
         return reply.get("data") or {}
 
     @staticmethod
@@ -1090,6 +1116,7 @@ class Server:
         self.safari.close_window()
         self.windows.stop()
         self.sessions.remove()
+        Engine.end_session()
         return 0
 
 

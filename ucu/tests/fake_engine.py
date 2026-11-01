@@ -40,9 +40,11 @@ def snapshot(app):
 
 def main():
     arguments = sys.argv[1:]
-    log({"args": arguments})
+    log({"args": arguments, "session": os.environ.get("AGENT_DESKTOP_SESSION")})
     command = arguments[0]
-    if command == "snapshot":
+    if command == "session":
+        reply({"activation": {"environment": "AGENT_DESKTOP_SESSION", "value": "run-1"}})
+    elif command == "snapshot":
         app = arguments[arguments.index("--app") + 1]
         if "--window-id" not in arguments and app == "Many":
             reply(error={"code": "AMBIGUOUS_TARGET", "message": "Several windows match"})

@@ -22,5 +22,5 @@ git push origin upstream/main:main
 git checkout ucu && git merge upstream/main
 ```
 
-`ucu/` keeps UCU's own README, tests and license notice. It still runs on the Codex engine: `ucu/scripts/ucu-proxy.py`
-starts `cua_repl`, and replacing that with this repo's engine is the work in progress.
+`ucu/` keeps UCU's own README, tests and license notice. It runs on this repo's engine. `ucu` also carries upstream's
+open PR #436, so that chats on different apps don't wait for each other, until upstream merges it.
