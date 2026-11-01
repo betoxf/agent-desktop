@@ -147,7 +147,7 @@ pub(crate) mod activate_descendant;
 pub(super) mod chain_context;
 pub(super) mod chain_def;
 pub(crate) mod chain_defs;
-pub(super) mod chain_delivery;
+pub(crate) mod chain_delivery;
 pub(crate) mod chain_disclosure_steps;
 pub(crate) mod chain_menu_steps;
 pub(super) mod chain_step;

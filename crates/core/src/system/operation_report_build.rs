@@ -33,6 +33,22 @@ impl OperationReport {
         )
     }
 
+    /// `semantic` says the element at the point was pressed; otherwise raw input
+    /// went to the window, which no read confirms.
+    pub fn background_click(event: &MouseEvent, semantic: bool) -> Self {
+        let step = if semantic {
+            window_step("element_press")
+        } else {
+            physical_step("pointer_click")
+        };
+        Self::new(
+            ActionResult::delivered_unverified("mouse-click").with_steps(vec![step]),
+            OperationTarget::Pointer {
+                point: event.point.clone(),
+            },
+        )
+    }
+
     pub fn drag_dispatched(params: &DragParams) -> Self {
         Self::new(
             ActionResult::delivered_unverified("drag")

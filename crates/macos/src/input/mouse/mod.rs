@@ -328,6 +328,7 @@ pub(crate) use imp::{create_event, standalone_state_error, wheel_lines_to_i32};
 pub(crate) use imp::{standalone_state_error, wheel_lines_to_i32};
 
 #[cfg(target_os = "macos")]
+pub(crate) mod mouse_background;
 pub(super) mod mouse_drag;
 #[cfg(target_os = "macos")]
 pub(super) mod mouse_drag_state;

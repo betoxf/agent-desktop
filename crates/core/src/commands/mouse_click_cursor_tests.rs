@@ -69,6 +69,7 @@ fn a_mouse_click_waits_for_the_command_already_using_the_cursor() {
             button: MouseButton::Left,
             count: 1,
             modifiers: Vec::new(),
+            app: None,
         },
         &adapter,
         &context,

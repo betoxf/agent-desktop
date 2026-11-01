@@ -236,6 +236,13 @@ pub(crate) struct MouseClickArgs {
     )]
     #[serde(default)]
     pub modifiers: Vec<String>,
+    #[arg(
+        long,
+        value_name = "APP",
+        help = "Click this app in the background: the pointer stays put, the app stays behind, and --headed is not needed"
+    )]
+    #[serde(default)]
+    pub app: Option<String>,
 }
 
 #[derive(Parser, Debug, Deserialize)]

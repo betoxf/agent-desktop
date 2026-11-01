@@ -15,6 +15,8 @@ pub struct MouseClickArgs {
     pub button: MouseButton,
     pub count: u32,
     pub modifiers: Vec<Modifier>,
+    /// Sends the click to this app in the background instead of moving the pointer.
+    pub app: Option<String>,
 }
 
 pub fn execute(
@@ -22,6 +24,9 @@ pub fn execute(
     adapter: &dyn PlatformAdapter,
     context: &CommandContext,
 ) -> Result<Value, AppError> {
+    if args.app.is_some() {
+        return background(args, adapter);
+    }
     require_cursor_policy(context, "mouse-click")?;
     require_pointer_capability(adapter)?;
     crate::validate_mouse_click_count(args.count)?;
@@ -47,6 +52,31 @@ pub fn execute(
     operation_response(
         &result?,
         json!({ "x": args.x, "y": args.y, "count": args.count }),
+    )
+}
+
+/// Moves nothing the user can feel, so it needs no `--headed`, and the overlay
+/// stays out of it because that follows the real pointer.
+fn background(args: MouseClickArgs, adapter: &dyn PlatformAdapter) -> Result<Value, AppError> {
+    crate::validate_mouse_click_count(args.count)?;
+    let lease = crate::commands::helpers::acquire_interaction_lease(adapter)?;
+    let app =
+        crate::system::app_lookup::resolve_app(args.app.as_deref(), adapter, lease.deadline())?;
+    let point = Point {
+        x: args.x,
+        y: args.y,
+    };
+    point.validate()?;
+    let event = MouseEvent {
+        kind: MouseEventKind::Click { count: args.count },
+        point,
+        button: args.button,
+        modifiers: args.modifiers,
+    };
+    let report = adapter.background_click(app.pid.get() as i32, event, &lease)?;
+    operation_response(
+        &report,
+        json!({ "x": args.x, "y": args.y, "count": args.count, "app": app.name }),
     )
 }
 

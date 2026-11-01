@@ -93,6 +93,7 @@ dependencies = [
  "core-foundation",
  "core-foundation-sys",
  "core-graphics",
+ "foreign-types",
  "libc",
  "rustc-hash",
  "serde",
