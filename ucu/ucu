@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+"""Install, remove and check Universal Computer Use (the `ucu` MCP server) for Claude Code and opencode.
+
+  ucu install [--python PATH]   register ucu, its Stop hook and approval policy
+  ucu uninstall                 remove them
+  ucu doctor                    check that everything is in place and that the server starts
+  ucu deny APP                  stop agents using an app
+  ucu allow APP                 let agents use an app again
+  ucu denied                    list the denied apps
+
+The server is registered once: it reads the Codex computer-use plugin itself each time it starts
+cua_repl, so a Codex update needs no re-registration. It approves every app except those denied in
+~/Library/Application Support/ucu/policy.json, which install writes once (denying password managers,
+Keychain Access and System Settings) and then keeps. Its list_windows and focus_window tools run
+~/.local/bin/ucu-window, which install builds. Code in the js tool imports js/wait.mjs straight from
+this repo.
+
+install backs up what it changes outside this repo to
+~/Library/Application Support/ucu/backups/<time>/ first.
+"""
+import argparse
+import importlib.util
+import json
+import os
+import select
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent
+PROXY = REPO / "scripts/ucu-proxy.py"
+WINDOW_SOURCE = REPO / "native/ucu-window.swift"
+
+HOME = Path.home()
+CLAUDE_CONFIG = HOME / ".claude.json"
+SETTINGS = HOME / ".claude/settings.json"
+BACKUPS = HOME / "Library/Application Support/ucu/backups"
+OPENCODE_CONFIG = HOME / ".config/opencode/opencode.json"
+SEARCH_PATH = os.pathsep.join(
+    [str(HOME / ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", os.environ.get("PATH", ""), "/usr/bin", "/bin"]
+)
+
+SERVER = "ucu"
+STOP_HOOK = 'pkill -INFO -P "$PPID" -f ucu-proxy.py; exit 0'
+# Claude Code settings for the server. `timeout` is a hard per-tool-call limit in ms (the js tool's
+# own default is 30 s; Sky allows 120 s per request), so a wedged call fails after 5 minutes instead
+# of the 30-minute idle limit. `alwaysLoad` keeps ucu's tools in every prompt instead of behind
+# tool search.
+CLAUDE_EXTRAS = {"timeout": 300000, "alwaysLoad": True}
+POLICY_ABOUT = ("ucu approves every app except those in deny (names match regardless of case). Change the list "
+                "with `ucu deny` and `ucu allow`, or here; edits apply at the next prompt.")
+# Apps the first policy denies: they hold passwords or system security settings.
+DEFAULT_DENY = ["1Password", "1Password 7", "Bitwarden", "Dashlane", "Keychain Access", "Passwords",
+                "System Preferences", "System Settings"]
+
+
+def load_proxy():
+    spec = importlib.util.spec_from_file_location("ucu_proxy", PROXY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+proxy = load_proxy()
+
+
+def say(mark, message):
+    print(f"{mark} {message}")
+
+
+def fail(message):
+    raise SystemExit(f"✗ {message}")
+
+
+def tool(name):
+    return shutil.which(name, path=SEARCH_PATH)
+
+
+def claude(*args):
+    binary = tool("claude")
+    if not binary:
+        fail("the claude CLI was not found; install Claude Code first")
+    return subprocess.run([binary, *args], capture_output=True, text=True, timeout=120, cwd=str(HOME))
+
+
+def mcp_servers():
+    try:
+        return json.loads(CLAUDE_CONFIG.read_text()).get("mcpServers", {})
+    except (OSError, ValueError):
+        return {}
+
+
+def definition(python):
+    return {"type": "stdio", "command": python, "args": ["-I", str(PROXY)], "env": {}, **CLAUDE_EXTRAS}
+
+
+def handshake(server, timeout=20):
+    """Start a server definition as Claude Code would; return None once it answers initialize, else why not."""
+    try:
+        process = subprocess.Popen([server["command"], *server.get("args", [])], stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   env={**os.environ, **server.get("env", {})}, cwd=str(HOME))
+    except OSError as error:
+        return f"could not start: {error}"
+    try:
+        request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "ucu", "version": "1"}}}
+        process.stdin.write((json.dumps(request) + "\n").encode())
+        process.stdin.flush()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            ready, _, _ = select.select([process.stdout], [], [], 0.5)
+            if not ready:
+                if process.poll() is not None:
+                    return f"exited with code {process.returncode} before answering"
+                continue
+            line = process.stdout.readline()
+            if not line:
+                return "closed stdout before answering"
+            try:
+                reply = json.loads(line)
+            except ValueError:
+                continue
+            if reply.get("id") == 1:
+                return None if "result" in reply else (reply.get("error") or {}).get("message", json.dumps(reply)[:200])
+        return f"no initialize reply within {timeout}s"
+    finally:
+        try:
+            process.stdin.close()
+            process.wait(5)
+        except (OSError, subprocess.TimeoutExpired):
+            process.kill()
+        process.stdout.close()
+
+
+def write_json(path, data):
+    target = path.resolve()  # keep a symlinked config file a symlink
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".ucu-tmp")
+    temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    os.replace(temporary, target)
+
+
+# --- ~/.claude/settings.json hook ---------------------------------------------
+def read_settings():
+    try:
+        return json.loads(SETTINGS.read_text())
+    except FileNotFoundError:
+        return {}
+
+
+def is_ucu_hook(group):
+    return any("ucu-proxy.py" in hook.get("command", "") for hook in group.get("hooks", []))
+
+
+def set_stop_hook(install):
+    """Remove ucu's Stop hook, then add it back when `install`."""
+    settings = read_settings()
+    hooks = settings.setdefault("hooks", {})
+    groups = [group for group in hooks.get("Stop", []) if not is_ucu_hook(group)]
+    if install:
+        groups.append({"hooks": [{"type": "command", "command": STOP_HOOK, "timeout": 5}]})
+    if groups:
+        hooks["Stop"] = groups
+    else:
+        hooks.pop("Stop", None)
+    if not hooks:
+        settings.pop("hooks")
+    write_json(SETTINGS, settings)
+
+
+# --- opencode -----------------------------------------------------------------
+def set_opencode(python, folder=None):
+    """Register ucu in opencode, if it is set up; with python=None, remove it."""
+    if not OPENCODE_CONFIG.exists():
+        return
+    try:
+        config = json.loads(OPENCODE_CONFIG.read_text())
+    except (OSError, ValueError) as error:
+        say("!", f"left {OPENCODE_CONFIG} as it was: {error}")
+        return
+    if folder:
+        shutil.copy2(OPENCODE_CONFIG, folder / OPENCODE_CONFIG.name)
+    servers = config.setdefault("mcp", {})
+    if python:
+        servers[SERVER] = {"type": "local", "command": [python, "-I", str(PROXY)], "enabled": True}
+    else:
+        servers.pop(SERVER, None)
+    if not servers:
+        config.pop("mcp")
+    write_json(OPENCODE_CONFIG, config)
+    say("✓", f"{'registered' if python else 'removed'} {SERVER} in {OPENCODE_CONFIG}")
+
+
+# --- approval policy ----------------------------------------------------------
+def read_policy():
+    try:
+        policy = json.loads(proxy.POLICY.read_text())
+    except FileNotFoundError:
+        return {"about": POLICY_ABOUT, "deny": []}
+    except (OSError, ValueError) as error:
+        fail(f"could not read {proxy.POLICY}: {error}")
+    if not isinstance(policy, dict) or not isinstance(policy.get("deny", []), list):
+        fail(f"{proxy.POLICY} needs a `deny` list of app names")
+    return policy
+
+
+def set_denied(app, denied):
+    policy = read_policy()
+    names = [name for name in policy.get("deny", []) if proxy.app_key(name) != proxy.app_key(app)]
+    policy["deny"] = names + [app] if denied else names
+    write_json(proxy.POLICY, policy)
+    say("✓", f"{app} is {'denied' if denied else 'approved'} from the next prompt on")
+    return 0
+
+
+def list_denied():
+    names = read_policy().get("deny", [])
+    print("\n".join(names) if names else "No apps are denied: every app is approved.")
+    return 0
+
+
+# --- install ------------------------------------------------------------------
+def backup():
+    folder = BACKUPS / datetime.now().strftime("%Y%m%d-%H%M%S")
+    folder.mkdir(parents=True, exist_ok=True)
+    servers = {name: entry for name, entry in mcp_servers().items() if name == SERVER}
+    (folder / "mcp-servers.json").write_text(json.dumps(servers, indent=2) + "\n")
+    if SETTINGS.exists():
+        shutil.copy2(SETTINGS, folder / "settings.json")
+    return folder
+
+
+def seed_policy():
+    if proxy.POLICY.exists():
+        say("✓", f"kept your approval policy {proxy.POLICY}")
+        return
+    write_json(proxy.POLICY, {"about": POLICY_ABOUT, "deny": DEFAULT_DENY})
+    say("✓", f"wrote {proxy.POLICY}: every app is approved except {len(DEFAULT_DENY)} that hold passwords or "
+             "system settings")
+
+
+def build_window_helper():
+    swiftc = tool("swiftc")
+    if not swiftc:
+        say("!", "swiftc not found, so ucu-window was not built (install the Xcode command line tools)")
+        return
+    proxy.WINDOW_HELPER.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run([swiftc, "-O", str(WINDOW_SOURCE), "-o", str(proxy.WINDOW_HELPER)],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        say("✓", f"built {proxy.WINDOW_HELPER} for the list_windows and focus_window tools")
+    else:
+        say("!", f"could not build ucu-window: {(result.stderr or result.stdout).strip()[-300:]}")
+
+
+def install(python):
+    python = str(Path(python).expanduser())  # not resolved: a stable symlink such as uv's survives upgrades
+    try:
+        version_ok = subprocess.run([python, "-I", "-c", "import sys; sys.exit(sys.version_info < (3, 9))"]).returncode == 0
+    except OSError:
+        version_ok = False
+    if not version_ok:
+        fail(f"{python} is not a Python 3.9 or newer")
+    if not tool("claude"):
+        fail("the claude CLI was not found; install Claude Code first")
+    try:
+        version, _command, _env = proxy.plugin_command()
+    except RuntimeError as error:
+        fail(f"{error}; nothing was changed. See Requirements in the README")
+    failure = handshake(definition(python))
+    if failure:
+        fail(f"ucu did not start with Codex plugin {version} ({failure}); nothing was changed")
+
+    folder = backup()
+    say("✓", f"backed up the current setup to {folder}")
+    build_window_helper()
+    seed_policy()
+    claude("mcp", "remove", SERVER, "-s", "user")  # absent is fine
+    result = claude("mcp", "add-json", SERVER, json.dumps(definition(python)), "-s", "user")
+    if result.returncode != 0 or SERVER not in mcp_servers():
+        fail(f"could not register {SERVER}: {(result.stderr or result.stdout).strip()[:300]}")
+    say("✓", f"registered {SERVER} in {CLAUDE_CONFIG} (it now uses Codex plugin {version})")
+    set_stop_hook(True)
+    say("✓", f"set ucu's Stop hook in {SETTINGS}")
+    set_opencode(python, folder)
+    print(f'Done. New sessions get `{SERVER}`; open ones need a restart. Run `./ucu deny "App Name"` to block an app.')
+    return 0
+
+
+# --- uninstall ----------------------------------------------------------------
+def uninstall():
+    set_stop_hook(False)
+    if SERVER in mcp_servers():
+        claude("mcp", "remove", SERVER, "-s", "user")
+    set_opencode(None)
+    proxy.WINDOW_HELPER.unlink(missing_ok=True)
+    say("✓", f"removed {SERVER}, its hook and ucu-window (your policy stays in {proxy.POLICY})")
+    return 0
+
+
+# --- doctor -------------------------------------------------------------------
+def doctor():
+    failures = 0
+
+    def check(ok, message, hint=""):
+        nonlocal failures
+        failures += not ok
+        say("✓" if ok else "✗", message + (f": {hint}" if hint and not ok else ""))
+
+    entry = mcp_servers().get(SERVER)
+    check(entry is not None, f"{SERVER} is registered in {CLAUDE_CONFIG}", "run `ucu install`")
+    if entry:
+        check(entry.get("args") == ["-I", str(PROXY)], "it runs this repo's proxy, which finds the Codex plugin itself",
+              f"args are {entry.get('args')}; run `ucu install`")
+        check(os.access(entry.get("command") or "", os.X_OK), f"its Python {entry.get('command')} exists",
+              "run `ucu install --python PATH`")
+    try:
+        version, _command, _env = proxy.plugin_command()
+        check(True, f"Codex computer-use plugin {version} is usable")
+    except RuntimeError as error:
+        version = None
+        check(False, "a Codex computer-use plugin is usable", str(error))
+    if entry and version:
+        failure = handshake({"type": "stdio", **entry})
+        check(failure is None, "the server answers an MCP initialize", failure)
+
+    hooks = read_settings().get("hooks", {})
+    check(any(is_ucu_hook(group) for group in hooks.get("Stop", [])), f"the Stop hook is in {SETTINGS}",
+          "run `ucu install`")
+    try:
+        denied = json.loads(proxy.POLICY.read_text()).get("deny")
+        if isinstance(denied, list):
+            check(True, f"the approval policy denies {len(denied)} apps and approves every other app")
+        else:
+            check(False, f"{proxy.POLICY} has a `deny` list", "until it does, every app is asked")
+    except FileNotFoundError:
+        check(False, f"the approval policy {proxy.POLICY} exists", "run `ucu install`; until then every app is asked")
+    except (OSError, ValueError, AttributeError) as error:
+        check(False, f"{proxy.POLICY} is valid", f"{error}; until it is, every app is asked")
+    if proxy.WINDOW_HELPER.exists():
+        result = subprocess.run([str(proxy.WINDOW_HELPER), "list"], capture_output=True, text=True)
+        check(result.returncode == 0, "ucu-window can read app windows (Accessibility permission)",
+              result.stderr.strip() + " (a usage message means it is out of date: run `ucu install`)")
+    else:
+        check(False, f"{proxy.WINDOW_HELPER} is built", "run `ucu install` (needs swiftc)")
+    if OPENCODE_CONFIG.exists():
+        try:
+            servers = json.loads(OPENCODE_CONFIG.read_text()).get("mcp", {})
+        except (OSError, ValueError):
+            servers = {}
+        check((servers.get(SERVER) or {}).get("command", [])[1:] == ["-I", str(PROXY)], f"opencode runs {SERVER}",
+              "run `ucu install`")
+    return 1 if failures else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="ucu", description=__doc__.splitlines()[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    install_parser = commands.add_parser("install", help="register ucu, its hook and policy")
+    install_parser.add_argument("--python", default=sys.executable,
+                                help="interpreter for the server (default: the one running ucu)")
+    commands.add_parser("uninstall", help="remove ucu")
+    commands.add_parser("doctor", help="check the installation")
+    commands.add_parser("deny", help="stop agents using an app").add_argument("app", help='for example "Mail"')
+    commands.add_parser("allow", help="let agents use an app again").add_argument("app")
+    commands.add_parser("denied", help="list the denied apps")
+    args = parser.parse_args()
+    if args.command == "install":
+        return install(args.python)
+    if args.command == "uninstall":
+        return uninstall()
+    if args.command in ("deny", "allow"):
+        return set_denied(args.app, args.command == "deny")
+    if args.command == "denied":
+        return list_denied()
+    return doctor()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
