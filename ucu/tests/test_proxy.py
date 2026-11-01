@@ -140,9 +140,6 @@ class Proxy:
         self.home.cleanup()
 
 
-def meta(reply):
-    return json.loads(reply["result"]["content"][-1]["text"])["x-codex-turn-metadata"]
-
 
 class ServerTest(unittest.TestCase):
     def setUp(self):

@@ -14,7 +14,7 @@ import time
 
 LOG = os.environ["FAKE_WINDOW_LOG"]
 REPORTS = os.environ["FAKE_WINDOW_REPORTS"]
-OPEN_DELAY = 0.2  # opening an app takes a while, and cua_repl must not get the call before it is done
+OPEN_DELAY = 0.2  # opening an app takes a while, and the engine must not get the call before it is done
 parked = set()
 
 
