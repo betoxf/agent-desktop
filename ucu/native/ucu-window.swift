@@ -1,7 +1,6 @@
 // ucu-window: windows and quiet launches for ucu.
 //
-// ucu (Sky computer use) binds `cua.getApp("App")` to the app's main window and has no
-// window selector on macOS. This helper uses the Accessibility API to list an app's windows
+// This helper uses the Accessibility API to list an app's windows
 // and to make one of them the main window (optionally leaving full screen first), so the next
 // `cua.getApp(...)` targets it.
 //
@@ -260,46 +259,38 @@ final class AgentDesktop {
     }
 }
 
-// The agent's own cursor. The engine draws its cursors in windows of its service, one per chat, with no setting for how
-// they look. So each chat draws its own, in its color, wherever the engine's goes: the window server still reports those
-// windows while the service is hidden. Hiding the service is what takes the engine's cursors off the screen, and its
-// next action brings them back for about a frame, so it is hidden again each time. Shape and shadow copy the engine's.
+// The agent's own cursor, one per chat in its color. The server says where each action lands. It stays just above the
+// window it is working on, so the user's front windows cover it, and it takes no clicks.
 final class AgentCursor {
-    static let serviceID = "com.openai.sky.CUAService"
-    static let size: CGFloat = 126, tick = 1.0 / 120, searchEvery = 0.1, hideEvery = 0.03, linger = 20.0, fadeTime = 0.25
+    static let size: CGFloat = 126, tick = 1.0 / 120, linger = 20.0, fadeTime = 0.25
     static let bend: CGFloat = 0.16, tiltLimit: CGFloat = 0.42, tiltEase = 0.07, restHeading = 3 * CGFloat.pi / 4
 
     var color: NSColor?  // without one from the proxy, the engine's cursor stays
     var timer: Timer?
     var panel: NSPanel?
     let arrow = CAShapeLayer()
-    var service: NSRunningApplication?
-    var seen = [CGWindowID: (center: CGPoint, onScreen: Bool)]()  // the engine's cursors
-    var nextSearch = Date.distantPast, nextHide = Date.distantPast, restAt = Date.distantFuture, lastStep = Date()
+    var restAt = Date.distantFuture, lastStep = Date()
     var target: CGWindowID?  // the window under the cursor, which it stays just above
     var ticks = 0
     var position: CGPoint?, velocity = CGPoint.zero, tilt: CGFloat = 0
     var path: (start: CGPoint, control: CGPoint, end: CGPoint, began: Date, time: Double, moving: Bool)?
 
-    func wake(_ state: @escaping () -> (busy: Bool, apps: [NSRunningApplication])) {
-        guard color != nil, timer == nil else { return }
+    func move(to point: CGPoint, over apps: [NSRunningApplication], busy: @escaping () -> Bool) {
+        guard color != nil, let window = topWindow(at: point, of: apps) else { return }
+        restAt = Date() + Self.linger
+        head(to: point, over: window, Date())
+        guard timer == nil else { return }
         lastStep = Date()
-        timer = Timer.scheduledTimer(withTimeInterval: Self.tick, repeats: true) { [self] _ in
-            let now = state()
-            step(busy: now.busy, apps: now.apps)
-        }
+        timer = Timer.scheduledTimer(withTimeInterval: Self.tick, repeats: true) { [self] _ in step(busy: busy()) }
     }
 
     func rest() { restAt = Date() }
 
-    func step(busy: Bool, apps: [NSRunningApplication]) {
+    func step(busy: Bool) {
         let now = Date(), elapsed = now.timeIntervalSince(lastStep)
         lastStep = now
         ticks += 1
-        if busy {
-            restAt = now + Self.linger
-            follow(apps, now)
-        }
+        if busy { restAt = now + Self.linger }
         glide(now, elapsed)
         if ticks % 30 == 0 { keepInPlace() }
         if let panel, position != nil, now >= restAt {
@@ -311,77 +302,20 @@ final class AgentCursor {
                 target = nil
             }
         }
-        if !busy && position == nil {
+        if position == nil {
             timer?.invalidate()
             timer = nil
         }
     }
 
-    func follow(_ apps: [NSRunningApplication], _ now: Date) {
-        if now >= nextSearch {
-            nextSearch = now + Self.searchEvery
-            for window in serviceWindows([.optionAll]).filter(Self.isCursor) {
-                if let id = window[kCGWindowNumber as String] as? CGWindowID, seen[id] == nil {
-                    seen[id] = (CGPoint(x: CGFloat.nan, y: 0), false)
-                }
-            }
-        }
-        var anyOnScreen = false
-        for (id, last) in seen {
-            guard let window = windowInfo(id) else {
-                seen[id] = nil
-                continue
-            }
-            let frame = bounds(of: window), center = CGPoint(x: frame.midX, y: frame.midY)
-            let onScreen = window[kCGWindowIsOnscreen as String] as? Bool ?? false
-            anyOnScreen = anyOnScreen || onScreen
-            // A click on the same spot doesn't move the window, it only brings it back.
-            if center != last.center || (onScreen && !last.onScreen), let under = mine(id, at: center, apps) {
-                head(to: center, over: under, now)
-            }
-            seen[id] = (center, onScreen)
-        }
-        if anyOnScreen, now >= nextHide {
-            nextHide = now + Self.hideEvery
-            hideEngine()
-        }
-    }
-
-    static func isCursor(_ window: [String: Any]) -> Bool {
-        let frame = bounds(of: window)
-        return abs(frame.width - frame.height) < 1 && (60...200).contains(frame.width)
-    }
-
-    func serviceWindows(_ options: CGWindowListOption) -> [[String: Any]] {
-        if service?.isTerminated ?? true {
-            service = NSRunningApplication.runningApplications(withBundleIdentifier: Self.serviceID).first
-        }
-        guard let pid = service?.processIdentifier else { return [] }
-        let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
-        return list.filter { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) }
-    }
-
-    // A permission window of the service has to stay on screen, and nothing can be hidden without the Accessibility
-    // permission, so then the two cursors show together.
-    func hideEngine() {
-        guard let service, serviceWindows([.optionOnScreenOnly]).allSatisfy(Self.isCursor) else { return }
-        AXUIElementSetAttributeValue(appElement(service.processIdentifier), kAXHiddenAttribute as CFString, kCFBooleanTrue)
-    }
-
-    // The window a cursor of the engine is over, if that window is one this chat drives. The engine keeps a cursor just
-    // above its window, so the next window down tells, even where windows overlap. Once it is hidden, or when another
-    // chat has hidden it first, only the place is left to go by.
-    func mine(_ id: CGWindowID, at point: CGPoint, _ apps: [NSRunningApplication]) -> [String: Any]? {
-        let pids = Set(apps.map { Int($0.processIdentifier) }), serviceID = Int(service?.processIdentifier ?? 0)
+    // The frontmost window of the apps this chat drives at that point. A hidden app has none, so it shows no cursor.
+    func topWindow(at point: CGPoint, of apps: [NSRunningApplication]) -> [String: Any]? {
+        let pids = Set(apps.map { Int($0.processIdentifier) })
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] ?? []
-        let top = list.first { pids.contains($0[kCGWindowOwnerPID as String] as? Int ?? 0) && bounds(of: $0).contains(point) }
-        guard let place = list.firstIndex(where: { ($0[kCGWindowNumber as String] as? CGWindowID) == id }) else { return top }
-        let below = list[(place + 1)...].first {
-            $0[kCGWindowOwnerPID as String] as? Int != serviceID && $0[kCGWindowOwnerName as String] as? String != "ucu-window"
+        return list.first {
+            pids.contains($0[kCGWindowOwnerPID as String] as? Int ?? 0) && bounds(of: $0).contains(point)
         }
-        guard let below, pids.contains(below[kCGWindowOwnerPID as String] as? Int ?? 0) else { return nil }
-        return top ?? below
     }
 
     func head(to end: CGPoint, over window: [String: Any], _ now: Date) {
@@ -506,7 +440,7 @@ final class AgentCursor {
     }
 }
 
-// Runs next to cua_repl for as long as its stdin stays open, so it can't outlive the proxy. Commands come as one
+// Runs next to the server for as long as its stdin stays open, so it can't outlive the proxy. Commands come as one
 // JSON object per line on stdin; replies and reports go out the same way on stdout.
 //
 //   {"id": 1, "open": "Blender", "deny": ["Terminal"]}  open a closed app hidden, unless it is denied
@@ -517,6 +451,7 @@ final class AgentCursor {
 //   {"busy": true}                                      an agent's call began (false: it ended)
 //   {"allow": "Blender"}                                bring this app back and let it come to the front
 //   {"cursor": "#E5484D"}                               draw the agent's cursor in this color
+//   {"cursorTo": [640, 480]}                            move the cursor to this place on screen
 //   {"turnEnded": true}                                 the turn ended, so the cursor can go
 //
 // Reports are {"event": "window", ...} for a new window, and {"event": "focus", ...} when an app that an agent's
@@ -578,6 +513,10 @@ final class Watcher {
     func handle(_ command: [String: Any]) {
         if let hex = command["cursor"] as? String { cursor.color = color(hex) }
         if command["turnEnded"] != nil { cursor.rest() }
+        if let point = command["cursorTo"] as? [Double], point.count == 2 {
+            driven = watched.compactMap(running)
+            cursor.move(to: CGPoint(x: point[0], y: point[1]), over: driven) { [self] in Date() < busyUntil }
+        }
         if let names = command["watch"] as? [String] {
             watched.formUnion(names.map(key))
             driven = watched.compactMap(running)
@@ -594,7 +533,6 @@ final class Watcher {
                 front = NSWorkspace.shared.frontmostApplication
                 driven = watched.compactMap(running)
                 scan()
-                cursor.wake { [self] in (Date() < busyUntil, driven) }
             }
         }
         if let name = command["open"] as? String {

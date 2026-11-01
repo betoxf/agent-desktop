@@ -8,12 +8,10 @@
   ucu allow APP                 let agents use an app again
   ucu denied                    list the denied apps
 
-The server is registered once: it reads the Codex computer-use plugin itself each time it starts
-cua_repl, so a Codex update needs no re-registration. It approves every app except those denied in
-~/Library/Application Support/ucu/policy.json, which install writes once (denying password managers,
-Keychain Access and System Settings) and then keeps. Its list_windows and focus_window tools run
-~/.local/bin/ucu-window, which install builds. Code in the js tool imports js/wait.mjs straight from
-this repo.
+The server approves every app except those denied in ~/Library/Application Support/ucu/policy.json,
+which install writes once (denying password managers, Keychain Access and System Settings) and then
+keeps. Install builds the engine, agent-desktop from this repository, to ~/.local/bin/ucu-engine, and
+ucu-window to ~/.local/bin/ucu-window.
 
 install backs up what it changes outside this repo to
 ~/Library/Application Support/ucu/backups/<time>/ first.
@@ -33,6 +31,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent
 PROXY = REPO / "scripts/ucu-proxy.py"
 WINDOW_SOURCE = REPO / "native/ucu-window.swift"
+WORKSPACE = REPO.parent
 
 HOME = Path.home()
 CLAUDE_CONFIG = HOME / ".claude.json"
@@ -45,10 +44,9 @@ SEARCH_PATH = os.pathsep.join(
 
 SERVER = "ucu"
 STOP_HOOK = 'pkill -INFO -P "$PPID" -f ucu-proxy.py; exit 0'
-# Claude Code settings for the server. `timeout` is a hard per-tool-call limit in ms (the js tool's
-# own default is 30 s; Sky allows 120 s per request), so a wedged call fails after 5 minutes instead
-# of the 30-minute idle limit. `alwaysLoad` keeps ucu's tools in every prompt instead of behind
-# tool search.
+# Claude Code settings for the server. `timeout` is a hard per-tool-call limit in ms, so a wedged call
+# fails after 5 minutes instead of the 30-minute idle limit. `alwaysLoad` keeps ucu's tools in every
+# prompt instead of behind tool search.
 CLAUDE_EXTRAS = {"timeout": 300000, "alwaysLoad": True}
 POLICY_ABOUT = ("ucu approves every app except those in deny (names match regardless of case). Change the list "
                 "with `ucu deny` and `ucu allow`, or here; edits apply at the next prompt.")
@@ -243,6 +241,29 @@ def seed_policy():
              "system settings")
 
 
+def build_engine():
+    """Build agent-desktop and install it, or say why not. A rustup install has no `cargo` on PATH of its own."""
+    env = dict(os.environ)
+    cargo = tool("cargo")
+    if not cargo and tool("rustup"):
+        found = subprocess.run([tool("rustup"), "which", "cargo"], capture_output=True, text=True, cwd=str(WORKSPACE))
+        if found.returncode == 0:
+            cargo = found.stdout.strip()
+            env["PATH"] = os.pathsep.join([str(Path(cargo).parent), env.get("PATH", "")])
+    if not cargo:
+        return "cargo was not found; install Rust with rustup"
+    result = subprocess.run([cargo, "build", "--release", "-p", "agent-desktop"], capture_output=True, text=True,
+                            cwd=str(WORKSPACE), env=env)
+    if result.returncode != 0:
+        return f"could not build the engine: {(result.stderr or result.stdout).strip()[-300:]}"
+    proxy.ENGINE.parent.mkdir(parents=True, exist_ok=True)
+    built = Path(os.environ.get("CARGO_TARGET_DIR") or WORKSPACE / "target") / "release/agent-desktop"
+    if not built.exists():
+        return f"the build left no {built}"
+    shutil.copy2(built, proxy.ENGINE)
+    return None
+
+
 def build_window_helper():
     swiftc = tool("swiftc")
     if not swiftc:
@@ -267,13 +288,13 @@ def install(python):
         fail(f"{python} is not a Python 3.9 or newer")
     if not tool("claude"):
         fail("the claude CLI was not found; install Claude Code first")
-    try:
-        version, _command, _env = proxy.plugin_command()
-    except RuntimeError as error:
-        fail(f"{error}; nothing was changed. See Requirements in the README")
     failure = handshake(definition(python))
     if failure:
-        fail(f"ucu did not start with Codex plugin {version} ({failure}); nothing was changed")
+        fail(f"ucu did not start ({failure}); nothing was changed")
+    failure = build_engine()
+    if failure:
+        fail(f"{failure}; nothing was changed")
+    say("✓", f"built the engine at {proxy.ENGINE}")
 
     folder = backup()
     say("✓", f"backed up the current setup to {folder}")
@@ -283,7 +304,7 @@ def install(python):
     result = claude("mcp", "add-json", SERVER, json.dumps(definition(python)), "-s", "user")
     if result.returncode != 0 or SERVER not in mcp_servers():
         fail(f"could not register {SERVER}: {(result.stderr or result.stdout).strip()[:300]}")
-    say("✓", f"registered {SERVER} in {CLAUDE_CONFIG} (it now uses Codex plugin {version})")
+    say("✓", f"registered {SERVER} in {CLAUDE_CONFIG}")
     set_stop_hook(True)
     say("✓", f"set ucu's Stop hook in {SETTINGS}")
     set_opencode(python, folder)
@@ -298,7 +319,8 @@ def uninstall():
         claude("mcp", "remove", SERVER, "-s", "user")
     set_opencode(None)
     proxy.WINDOW_HELPER.unlink(missing_ok=True)
-    say("✓", f"removed {SERVER}, its hook and ucu-window (your policy stays in {proxy.POLICY})")
+    proxy.ENGINE.unlink(missing_ok=True)
+    say("✓", f"removed {SERVER}, its hook, ucu-window and the engine (your policy stays in {proxy.POLICY})")
     return 0
 
 
@@ -314,17 +336,16 @@ def doctor():
     entry = mcp_servers().get(SERVER)
     check(entry is not None, f"{SERVER} is registered in {CLAUDE_CONFIG}", "run `ucu install`")
     if entry:
-        check(entry.get("args") == ["-I", str(PROXY)], "it runs this repo's proxy, which finds the Codex plugin itself",
+        check(entry.get("args") == ["-I", str(PROXY)], "it runs this repo's server",
               f"args are {entry.get('args')}; run `ucu install`")
         check(os.access(entry.get("command") or "", os.X_OK), f"its Python {entry.get('command')} exists",
               "run `ucu install --python PATH`")
-    try:
-        version, _command, _env = proxy.plugin_command()
-        check(True, f"Codex computer-use plugin {version} is usable")
-    except RuntimeError as error:
-        version = None
-        check(False, "a Codex computer-use plugin is usable", str(error))
-    if entry and version:
+    if proxy.ENGINE.exists():
+        result = subprocess.run([str(proxy.ENGINE), "version"], capture_output=True, text=True)
+        check(result.returncode == 0, f"the engine {proxy.ENGINE} runs", (result.stderr or result.stdout).strip()[:200])
+    else:
+        check(False, f"{proxy.ENGINE} is built", "run `ucu install` (needs Rust)")
+    if entry:
         failure = handshake({"type": "stdio", **entry})
         check(failure is None, "the server answers an MCP initialize", failure)
 

@@ -43,9 +43,6 @@ class AlertTest(unittest.TestCase):
         self.watcher.heard = [(5.0, "‎WhatsApp")]
         self.assertEqual(len(self.watcher.take(started=1, late_until=0, apps={"whatsapp"})), 1)
 
-    def test_notices_which_apps_a_call_binds(self):
-        self.assertEqual(self.proxy.APP_CALL.findall('let a = await cua.getApp("Windows App");'), ["Windows App"])
-
     def test_turns_itself_off_without_a_log_command(self):
         self.proxy.ALERT_COMMAND = [str(Path(tempfile.gettempdir()) / "no-such-log-command")]
         self.watcher.start()

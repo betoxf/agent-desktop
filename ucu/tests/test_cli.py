@@ -1,8 +1,7 @@
 """`ucu install`, `doctor`, `uninstall` and the deny commands in a temporary HOME.
 
-claude and swiftc are fakes in $HOME/.local/bin, which ucu searches first, so nothing outside the
-temporary HOME is touched. The server ucu registers is the real proxy, which finds
-tests/fake_cua_repl.py through a plugin folder in the temporary HOME.
+claude, swiftc and cargo are fakes in $HOME/.local/bin, which ucu searches first, so nothing outside the
+temporary HOME is touched, and the real engine in target/release is only copied if it is there.
 """
 import json
 import os
@@ -14,7 +13,6 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FAKE = ROOT / "tests/fake_cua_repl.py"
 PROXY = str(ROOT / "scripts/ucu-proxy.py")
 OTHER_HOOK = {"hooks": [{"type": "command", "command": "afplay done.aiff"}]}
 OPENCODE = {"$schema": "https://opencode.ai/config.json", "model": "local/qwen",
@@ -39,6 +37,16 @@ out.chmod(0o755)
 """
 
 
+FAKE_CARGO = """
+if Path.home().joinpath("no-rust").exists():
+    sys.exit("error: no rust")
+built = Path.home() / "target/release/agent-desktop"
+built.parent.mkdir(parents=True, exist_ok=True)
+built.write_text("#!/bin/sh\\necho version\\n")
+built.chmod(0o755)
+"""
+
+
 class CliTest(unittest.TestCase):
     def setUp(self):
         home = tempfile.TemporaryDirectory()
@@ -46,22 +54,18 @@ class CliTest(unittest.TestCase):
         self.home = Path(home.name)
         bin_dir = self.home / ".local/bin"
         bin_dir.mkdir(parents=True)
-        for name, body in (("claude", FAKE_CLAUDE), ("swiftc", FAKE_SWIFTC)):
+        for name, body in (("claude", FAKE_CLAUDE), ("swiftc", FAKE_SWIFTC), ("cargo", FAKE_CARGO)):
             path = bin_dir / name
             path.write_text(f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n" + body)
             path.chmod(0o755)
-        self.env = {**os.environ, "HOME": str(self.home), "PATH": f"{bin_dir}:/usr/bin:/bin"}
+        self.env = {**os.environ, "HOME": str(self.home), "PATH": f"{bin_dir}:/usr/bin:/bin",
+                    "CARGO_TARGET_DIR": str(self.home / "target")}
         self.assertEqual(shutil.which("claude", path=self.env["PATH"]), str(bin_dir / "claude"))
 
         (self.home / ".claude.json").write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}, "numStartups": 3}))
         (self.home / ".claude").mkdir()
         (self.home / ".claude/settings.json").write_text(
             json.dumps({"model": "opus", "hooks": {"Stop": [OTHER_HOOK]}}, indent=2))
-        self.plugin = self.home / ".codex/plugins/cache/openai-bundled/unified-computer-use/26.1021.31345/.mcp.json"
-        self.plugin.parent.mkdir(parents=True)
-        self.plugin.write_text(json.dumps({"mcpServers": {"cua_repl": {
-            "command": sys.executable, "args": [str(FAKE)],
-            "env": {"CUA_REPL_NODE_REPL_PATH": sys.executable, "CUA_REPL_ENABLED_SURFACES": "computer"}}}}))
 
     def opencode(self):
         (self.home / ".config/opencode").mkdir(parents=True)
@@ -97,6 +101,7 @@ class CliTest(unittest.TestCase):
         backup = next((self.home / "Library/Application Support/ucu/backups").iterdir())
         self.assertEqual(json.loads((backup / "opencode.json").read_text()), OPENCODE)
         self.assertTrue((self.home / ".local/bin/ucu-window").exists())
+        self.assertTrue((self.home / ".local/bin/ucu-engine").exists())
 
         edited = {"deny": ["Mail"]}
         (self.home / POLICY).write_text(json.dumps(edited))
@@ -107,7 +112,6 @@ class CliTest(unittest.TestCase):
 
         code, output = self.ucu("doctor")
         self.assertEqual(code, 0, output)
-        self.assertIn("Codex computer-use plugin 26.1021.31345 is usable", output)
         self.assertIn("the approval policy denies 1 apps and approves every other app", output)
         self.assertNotIn("✗", output)
 
@@ -145,22 +149,13 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1, output)
         self.assertEqual((self.home / POLICY).read_text(), "{")
 
-    def test_install_changes_nothing_when_no_plugin_is_usable(self):
-        self.plugin.write_text(json.dumps({"mcpServers": {"cua_repl": {"command": "node", "enabled": False}}}))
+    def test_install_changes_nothing_when_the_engine_does_not_build(self):
+        (self.home / "no-rust").touch()
         code, output = self.ucu("install", "--python", sys.executable)
         self.assertEqual(code, 1, output)
-        self.assertIn("nothing was changed", output)
+        self.assertIn("could not build the engine", output)
         self.assertEqual(sorted(self.read_json(".claude.json")["mcpServers"]), ["other"])
         self.assertEqual(self.stop_hooks(), [OTHER_HOOK])
-        self.assertFalse((self.home / "Library/Application Support/ucu").exists())
-
-    def test_install_changes_nothing_when_cua_repl_does_not_answer(self):
-        entry = json.loads(self.plugin.read_text())["mcpServers"]["cua_repl"]
-        self.plugin.write_text(json.dumps({"mcpServers": {"cua_repl": {**entry, "command": "/usr/bin/false"}}}))
-        code, output = self.ucu("install", "--python", sys.executable)
-        self.assertEqual(code, 1, output)
-        self.assertIn("ucu did not start with Codex plugin 26.1021.31345", output)
-        self.assertEqual(sorted(self.read_json(".claude.json")["mcpServers"]), ["other"])
 
 
 if __name__ == "__main__":
