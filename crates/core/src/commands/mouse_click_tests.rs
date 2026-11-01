@@ -178,3 +178,63 @@ fn excessive_click_count_fails_before_dispatch() {
 
 #[path = "mouse_click_cursor_tests.rs"]
 mod cursor;
+
+struct BackgroundAdapter {
+    clicked: Mutex<Option<(i32, MouseEvent)>>,
+}
+
+impl ActionOps for BackgroundAdapter {}
+impl SystemOps for BackgroundAdapter {
+    crate::adapter::guarded_interaction_lease!();
+}
+
+impl ObservationOps for BackgroundAdapter {
+    fn list_apps(&self, _deadline: crate::Deadline) -> Result<Vec<crate::AppInfo>, AdapterError> {
+        Ok(vec![crate::AppInfo {
+            name: "Calculator".into(),
+            pid: crate::ProcessId::new(7),
+            bundle_id: None,
+            process_instance: Some("calculator-instance".into()),
+            presentation: None,
+        }])
+    }
+}
+
+impl InputOps for BackgroundAdapter {
+    fn background_click(
+        &self,
+        pid: i32,
+        event: MouseEvent,
+        _lease: &crate::InteractionLease,
+    ) -> Result<crate::OperationReport, AdapterError> {
+        *self.clicked.lock().unwrap() = Some((pid, event));
+        Ok(crate::adapter::test_report())
+    }
+}
+
+#[test]
+fn a_background_click_needs_no_headed_policy_and_goes_to_the_named_app() {
+    let adapter = BackgroundAdapter {
+        clicked: Mutex::new(None),
+    };
+    let context = CommandContext::new(None, None, false).expect("context loads");
+
+    execute(
+        MouseClickArgs {
+            x: 10.0,
+            y: 20.0,
+            button: MouseButton::Left,
+            count: 1,
+            modifiers: Vec::new(),
+            app: Some("Calculator".into()),
+        },
+        &adapter,
+        &context,
+    )
+    .expect("background click succeeds");
+
+    let clicked = adapter.clicked.lock().unwrap();
+    let (pid, event) = clicked.as_ref().expect("the adapter got the click");
+    assert_eq!(*pid, 7);
+    assert_eq!(event.point.x, 10.0);
+}

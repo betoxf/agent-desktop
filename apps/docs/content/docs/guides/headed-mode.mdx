@@ -28,6 +28,8 @@ agent-desktop --headed double-click @s8f3k2p9:e3    # a physical gesture
 
 Physical input gets no confirmation from the OS, so a physical result is usually `delivered_unverified`. Confirm the effect with a read, as in [the observe, act, verify loop](/desktop/guides/observe-act-verify).
 
+On macOS, `mouse-click --app APP --xy X,Y` is the exception: it clicks that app in the background, without `--headed`, moving neither the pointer nor the focus.
+
 ## Which commands need `--headed`
 
 On every platform: `triple-click`, `hover`, `drag`, `mouse-move`, `mouse-click`, and `mouse-wheel`. `double-click` needs it too, except on macOS when the element offers `AXOpen`. `key-down`, `key-up`, `mouse-down`, and `mouse-up` never deliver input in either mode; see the [keyboard](/desktop/commands/keyboard#key-down) and [mouse](/desktop/commands/mouse#mouse-down) references.
