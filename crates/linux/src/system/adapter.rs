@@ -4,9 +4,10 @@ use agent_desktop_core::system::process_state::ProcessState;
 use agent_desktop_core::{
     ActionResult, AdapterError, AdapterSession, AppInfo, Deadline, DismissAllNotificationsRequest,
     DismissNotificationRequest, DisplayInfo, ErrorCode, ImageBuffer, InteractionLease,
-    InteractionPolicy, KeyCombo, NotificationActionRequest, NotificationFilter, NotificationInfo,
-    OperationReport, PermissionReport, ProcessIdentity, ScreenshotTarget, SessionAffinity,
-    SignalBaseline, SignalFilter, SnapshotSurface, SystemOps, WindowInfo, WindowOp,
+    InteractionLeaseScope, InteractionPolicy, KeyCombo, NotificationActionRequest,
+    NotificationFilter, NotificationInfo, OperationReport, PermissionReport, ProcessIdentity,
+    ScreenshotTarget, SessionAffinity, SignalBaseline, SignalFilter, SnapshotSurface, SystemOps,
+    WindowInfo, WindowOp,
 };
 
 use crate::adapter::LinuxAdapter;
@@ -49,6 +50,14 @@ impl SystemOps for LinuxAdapter {
         deadline: Deadline,
     ) -> Result<InteractionLease, AdapterError> {
         interaction_lease::acquire(deadline)
+    }
+
+    fn acquire_scoped_interaction_lease(
+        &self,
+        scope: InteractionLeaseScope,
+        deadline: Deadline,
+    ) -> Result<InteractionLease, AdapterError> {
+        interaction_lease::acquire_for(scope, deadline)
     }
 
     fn permission_report(&self, deadline: Deadline) -> Result<PermissionReport, AdapterError> {
@@ -117,6 +126,11 @@ impl SystemOps for LinuxAdapter {
         lease: &InteractionLease,
     ) -> Result<OperationReport, AdapterError> {
         window_op::window_op(self.bus(), win, op, lease)
+    }
+
+    /// X11 and Wayland inject modifier edges into the session keyboard.
+    fn targeted_press_shares_session_keyboard(&self) -> bool {
+        true
     }
 
     fn press_key_for_app(
@@ -276,5 +290,15 @@ impl SystemOps for LinuxAdapter {
         lease: &InteractionLease,
     ) -> Result<WindowInfo, AdapterError> {
         shell::open_surface(self.bus(), surface, policy, lease)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agent_desktop_core::SystemOps;
+
+    #[test]
+    fn targeted_press_uses_the_session_keyboard() {
+        assert!(crate::adapter::LinuxAdapter::new().targeted_press_shares_session_keyboard());
     }
 }

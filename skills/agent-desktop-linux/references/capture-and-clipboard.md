@@ -137,7 +137,7 @@ file lists all work on Linux.
 ### Clipboard through FFI
 
 The C library reaches the same code; its clipboard API is text-only. Set and
-clear take the cross-process interaction lease; reads have a deadline but do not
+clear take the machine-wide interaction lease; reads have a deadline but do not
 take that mutation lease. The matching owner helper can sit beside
 `libagent_desktop_ffi.so`; it need not sit beside the host's executable. The
 library has no stable SONAME.

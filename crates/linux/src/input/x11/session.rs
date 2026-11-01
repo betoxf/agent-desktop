@@ -161,15 +161,17 @@ pub(crate) fn run_journaled<S: X11Sink + 'static>(
     }
 }
 
-fn retain_lease(lease: &InteractionLease) -> Result<OwnedFd, AdapterError> {
-    let fd = lease.duplicate_inheritable_fd()?;
-    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
-        return Err(AdapterError::internal(format!(
-            "The input worker could not retain the interaction lease: {}",
-            std::io::Error::last_os_error()
-        )));
+fn retain_lease(lease: &InteractionLease) -> Result<Vec<OwnedFd>, AdapterError> {
+    let fds = lease.duplicate_lock_fds()?;
+    for fd in &fds {
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(AdapterError::internal(format!(
+                "The input worker could not retain the interaction lease: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
     }
-    Ok(fd)
+    Ok(fds)
 }
 
 fn abandoned(deadline: Deadline, progress: &Progress) -> AdapterError {

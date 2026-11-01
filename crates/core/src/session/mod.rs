@@ -1,5 +1,6 @@
 mod gc;
 pub(crate) mod interaction_lease;
+pub(crate) mod lease_scope;
 mod liveness;
 mod manifest;
 pub(crate) mod process_lease_guard;

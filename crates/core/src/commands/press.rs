@@ -26,7 +26,15 @@ pub fn execute(
 
     let mut pressed_process = None;
     let result = if let Some((expected, window)) = target_app(&args, adapter, deadline)? {
-        let lease = adapter.acquire_interaction_lease(deadline)?;
+        let policy = context.physical_input_policy();
+        let scope = crate::InteractionLeaseScope::for_input(
+            adapter.targeted_press_shares_session_keyboard()
+                || policy.allow_focus_steal
+                || policy.allow_cursor_move,
+            expected.bundle_id.as_deref(),
+            Some(expected.pid),
+        );
+        let lease = adapter.acquire_scoped_interaction_lease(scope, deadline)?;
         let live = crate::commands::helpers::revalidate_app_for_mutation(
             adapter,
             &expected,

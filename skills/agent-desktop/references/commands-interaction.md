@@ -108,7 +108,7 @@ agent-desktop focus @s8f3k2p9:e2
 - A cell that exposes no value write is not directly editable. Activate it, take a fresh snapshot, and target the editor that appears. Some apps expose no editor and accept only keyboard input.
 - `clear` empties the element. `focus` sets keyboard focus without clicking.
 
-For a shared editor, such as a spreadsheet cell, the edit is a sequence: activate the cell, snapshot, target the editor, write, then commit. Run the whole sequence from one writer. The interaction lease serializes single actions, not your sequence.
+For a shared editor, such as a spreadsheet cell, the edit is a sequence: activate the cell, snapshot, target the editor, write, then commit. Run the whole sequence from one writer. The interaction lease serializes single actions on that application, not your sequence. Another application can be acted on at the same time. A headed action, a `press` with no `--app`, a `press --app` on Linux or Windows, or any action that steals focus takes the machine-wide lease and waits for every application lease. On macOS a headless `press --app` keeps the application lease.
 
 ## Selection, toggle, expand
 

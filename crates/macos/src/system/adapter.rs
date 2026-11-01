@@ -29,8 +29,19 @@ impl SystemOps for MacOSAdapter {
         &self,
         deadline: Deadline,
     ) -> Result<InteractionLease, AdapterError> {
+        self.acquire_scoped_interaction_lease(
+            agent_desktop_core::InteractionLeaseScope::global(),
+            deadline,
+        )
+    }
+
+    fn acquire_scoped_interaction_lease(
+        &self,
+        scope: agent_desktop_core::InteractionLeaseScope,
+        deadline: Deadline,
+    ) -> Result<InteractionLease, AdapterError> {
         let Some(raw) = std::env::var_os(agent_desktop_core::INTERACTION_LEASE_FD_ENV) else {
-            return agent_desktop_core::acquire_unix_interaction_lease(deadline);
+            return agent_desktop_core::acquire_unix_interaction_lease_for(&scope, deadline);
         };
         let raw = raw.into_string().map_err(|_| {
             AdapterError::new(
@@ -184,6 +195,11 @@ impl SystemOps for MacOSAdapter {
         )
     }
 
+    /// Posts one event, with modifier flags, to the target process.
+    fn targeted_press_shares_session_keyboard(&self) -> bool {
+        false
+    }
+
     fn press_key_for_app(
         &self,
         process: ProcessIdentity,
@@ -279,5 +295,15 @@ impl SystemOps for MacOSAdapter {
             request.policy,
             _lease.deadline(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agent_desktop_core::SystemOps;
+
+    #[test]
+    fn targeted_press_posts_to_the_named_process() {
+        assert!(!crate::adapter::MacOSAdapter::new().targeted_press_shares_session_keyboard());
     }
 }

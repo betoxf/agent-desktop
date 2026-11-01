@@ -21,7 +21,9 @@ pub fn execute(args: CloseAppArgs, adapter: &dyn PlatformAdapter) -> Result<Valu
     if protected {
         return Err(protected_process_error(&args.app));
     }
-    let lease = adapter.acquire_interaction_lease(deadline)?;
+    let scope =
+        crate::InteractionLeaseScope::app(expected.bundle_id.as_deref(), Some(expected.pid));
+    let lease = adapter.acquire_scoped_interaction_lease(scope, deadline)?;
     let live = crate::commands::helpers::revalidate_app_for_mutation(
         adapter,
         &expected,

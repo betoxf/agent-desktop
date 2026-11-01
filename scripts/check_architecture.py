@@ -60,6 +60,7 @@ CORE_OS_ALLOWLIST = {
     "refs/refs_tests.rs",
     "session/interaction_lease_tests.rs",
     "session/interaction_lease.rs",
+    "session/scoped_lease_tests.rs",
     "session/session_gc_tests.rs",
     "session/session_tests.rs",
     "session/tree_tests.rs",

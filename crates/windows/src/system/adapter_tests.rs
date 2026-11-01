@@ -2,6 +2,13 @@ use super::*;
 use agent_desktop_core::InputOps;
 
 #[test]
+fn targeted_press_uses_the_session_keyboard() {
+    use agent_desktop_core::SystemOps;
+
+    assert!(WindowsAdapter::new().targeted_press_shares_session_keyboard());
+}
+
+#[test]
 fn unknown_accessibility_is_unsupported_so_cli_and_ffi_agree() {
     use agent_desktop_core::PermissionState;
 

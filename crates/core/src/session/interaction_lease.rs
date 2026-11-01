@@ -9,11 +9,20 @@ use crate::{ErrorCode, storage::file_lock::FileLock};
 pub struct InteractionLease {
     _guard: Option<Arc<dyn Send + Sync>>,
     #[cfg(unix)]
-    file_guard: Option<Arc<FileLock>>,
+    files: Option<UnixHeld>,
     #[cfg(unix)]
     _process_guard: Option<Arc<crate::session::process_lease_guard::ProcessLeaseGuard>>,
     deadline: Deadline,
     contention_count: u64,
+}
+
+#[cfg(unix)]
+#[derive(Clone)]
+struct UnixHeld {
+    #[allow(dead_code)]
+    app_locks: Vec<Arc<FileLock>>,
+    primary: Arc<FileLock>,
+    inheritable: bool,
 }
 
 #[cfg(unix)]
@@ -27,7 +36,7 @@ impl InteractionLease {
         Ok(Self {
             _guard: Some(Arc::new(guard)),
             #[cfg(unix)]
-            file_guard: None,
+            files: None,
             #[cfg(unix)]
             _process_guard: None,
             deadline,
@@ -44,7 +53,7 @@ impl InteractionLease {
         Self {
             _guard: self._guard.clone(),
             #[cfg(unix)]
-            file_guard: self.file_guard.clone(),
+            files: self.files.clone(),
             #[cfg(unix)]
             _process_guard: self._process_guard.clone(),
             deadline,
@@ -58,10 +67,30 @@ impl InteractionLease {
 
     #[cfg(unix)]
     pub fn duplicate_inheritable_fd(&self) -> Result<std::os::fd::OwnedFd, AdapterError> {
-        self.file_guard
+        let files = self
+            .files
             .as_ref()
-            .ok_or_else(|| AdapterError::not_supported("interaction lease descriptor inheritance"))?
-            .duplicate_inheritable()
+            .filter(|files| files.inheritable)
+            .ok_or_else(|| {
+                AdapterError::not_supported("interaction lease descriptor inheritance")
+            })?;
+        files.primary.duplicate_inheritable()
+    }
+
+    /// Copies of every lock this lease holds, including an application lease.
+    /// The copies keep those locks after this lease is dropped. They are not
+    /// the descriptor a child adopts as the machine-wide lease.
+    #[cfg(unix)]
+    pub fn duplicate_lock_fds(&self) -> Result<Vec<std::os::fd::OwnedFd>, AdapterError> {
+        let files = self.files.as_ref().ok_or_else(|| {
+            AdapterError::not_supported("interaction lease descriptor inheritance")
+        })?;
+        let mut fds = Vec::with_capacity(1 + files.app_locks.len());
+        fds.push(files.primary.duplicate_inheritable()?);
+        for lock in &files.app_locks {
+            fds.push(lock.duplicate_inheritable()?);
+        }
+        Ok(fds)
     }
 
     #[cfg(unix)]
@@ -75,7 +104,41 @@ impl InteractionLease {
             .saturating_add(process_guard.contention_count());
         Self {
             _guard: None,
-            file_guard: Some(Arc::new(file_guard)),
+            files: Some(UnixHeld {
+                app_locks: Vec::new(),
+                primary: Arc::new(file_guard),
+                inheritable: true,
+            }),
+            _process_guard: Some(Arc::new(process_guard)),
+            deadline,
+            contention_count,
+        }
+    }
+
+    #[cfg(unix)]
+    fn from_app_lease(
+        deadline: Deadline,
+        primary: FileLock,
+        app_locks: Vec<FileLock>,
+        process_guard: crate::session::process_lease_guard::ProcessLeaseGuard,
+    ) -> Self {
+        let mut contention_count = primary
+            .contention_count()
+            .saturating_add(process_guard.contention_count());
+        let app_locks = app_locks
+            .into_iter()
+            .map(|lock| {
+                contention_count = contention_count.saturating_add(lock.contention_count());
+                Arc::new(lock)
+            })
+            .collect();
+        Self {
+            _guard: None,
+            files: Some(UnixHeld {
+                app_locks,
+                primary: Arc::new(primary),
+                inheritable: false,
+            }),
             _process_guard: Some(Arc::new(process_guard)),
             deadline,
             contention_count,
@@ -95,7 +158,7 @@ impl InteractionLease {
         Self {
             _guard: Some(Arc::new(guard)),
             #[cfg(unix)]
-            file_guard: None,
+            files: None,
             #[cfg(unix)]
             _process_guard: None,
             deadline,
@@ -108,14 +171,18 @@ impl InteractionLease {
 pub fn acquire_unix_interaction_lease(
     deadline: Deadline,
 ) -> Result<InteractionLease, AdapterError> {
-    let process_guard = crate::session::process_lease_guard::ProcessLeaseGuard::acquire(deadline)?;
-    let path = interaction_lock_path_at(std::path::Path::new("/tmp"))?;
-    let lock = FileLock::acquire(&path, deadline, "desktop interaction lease")?;
-    Ok(InteractionLease::from_file_lock(
+    acquire_unix_interaction_lease_for(
+        &crate::session::lease_scope::InteractionLeaseScope::global(),
         deadline,
-        lock,
-        process_guard,
-    ))
+    )
+}
+
+#[cfg(unix)]
+pub fn acquire_unix_interaction_lease_for(
+    scope: &crate::session::lease_scope::InteractionLeaseScope,
+    deadline: Deadline,
+) -> Result<InteractionLease, AdapterError> {
+    acquire_scoped_at(scope, deadline, std::path::Path::new("/tmp"))
 }
 
 #[cfg(unix)]
@@ -134,19 +201,62 @@ fn interaction_lock_path_at(root: &std::path::Path) -> Result<PathBuf, AdapterEr
     Ok(directory.join("interaction.lock"))
 }
 
+#[cfg(unix)]
+fn acquire_scoped_at(
+    scope: &crate::session::lease_scope::InteractionLeaseScope,
+    deadline: Deadline,
+    root: &std::path::Path,
+) -> Result<InteractionLease, AdapterError> {
+    let stems = scope.app_lock_stems();
+    let process_guard = if stems.is_empty() {
+        crate::session::process_lease_guard::ProcessLeaseGuard::acquire(deadline)?
+    } else {
+        crate::session::process_lease_guard::ProcessLeaseGuard::acquire_apps(&stems, deadline)?
+    };
+    let directory = interaction_lock_path_at(root)?
+        .parent()
+        .ok_or_else(|| AdapterError::internal("interaction lease path has no parent directory"))?
+        .to_path_buf();
+    let global_path = directory.join("interaction.lock");
+    if stems.is_empty() {
+        let lock = FileLock::acquire(&global_path, deadline, "desktop interaction lease")?;
+        return Ok(InteractionLease::from_file_lock(
+            deadline,
+            lock,
+            process_guard,
+        ));
+    }
+    let primary = FileLock::acquire_shared(&global_path, deadline, "desktop interaction lease")?;
+    let uid = unsafe { libc::geteuid() };
+    let apps_dir = directory.join("apps");
+    ensure_unix_runtime_directory(&apps_dir, uid)?;
+    let mut app_locks = Vec::with_capacity(stems.len());
+    for stem in &stems {
+        let path = apps_dir.join(format!("{stem}.lock"));
+        app_locks.push(FileLock::acquire(
+            &path,
+            deadline,
+            "desktop application lease",
+        )?);
+    }
+    Ok(InteractionLease::from_app_lease(
+        deadline,
+        primary,
+        app_locks,
+        process_guard,
+    ))
+}
+
 #[cfg(all(unix, test))]
 fn acquire_unix_interaction_lease_at(
     deadline: Deadline,
     root: &std::path::Path,
 ) -> Result<InteractionLease, AdapterError> {
-    let process_guard = crate::session::process_lease_guard::ProcessLeaseGuard::acquire(deadline)?;
-    let path = interaction_lock_path_at(root)?;
-    let lock = FileLock::acquire(&path, deadline, "test desktop interaction lease")?;
-    Ok(InteractionLease::from_file_lock(
+    acquire_scoped_at(
+        &crate::session::lease_scope::InteractionLeaseScope::global(),
         deadline,
-        lock,
-        process_guard,
-    ))
+        root,
+    )
 }
 
 #[cfg(unix)]
@@ -221,6 +331,16 @@ fn runtime_io_error(error: std::io::Error) -> AdapterError {
     AdapterError::new(ErrorCode::Internal, error.to_string())
 }
 
+#[cfg(all(unix, test))]
+pub(crate) fn exclusive_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 #[path = "interaction_lease_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "scoped_lease_tests.rs"]
+mod scoped_tests;

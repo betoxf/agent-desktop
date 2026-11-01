@@ -57,8 +57,10 @@ fn activate(
 }
 
 fn switch_on(adapter: &dyn PlatformAdapter, root: ObservationRoot<'_>) -> Result<(), AppError> {
-    let acquired = adapter.acquire_interaction_lease(crate::Deadline::standard()?)?;
-    adapter.activate_renderer_accessibility(root_process(root)?, &acquired)?;
+    let process = root_process(root)?;
+    let scope = crate::InteractionLeaseScope::app(None, Some(process.pid));
+    let acquired = adapter.acquire_scoped_interaction_lease(scope, crate::Deadline::standard()?)?;
+    adapter.activate_renderer_accessibility(process, &acquired)?;
     Ok(())
 }
 

@@ -57,8 +57,10 @@ impl SystemOps for AllowingAdapter {
 struct CapturingAdapter {
     global_policy: Mutex<Option<crate::InteractionPolicy>>,
     app_policy: Mutex<Option<crate::InteractionPolicy>>,
+    scope: Mutex<Option<crate::InteractionLeaseScope>>,
     dispatches: std::sync::atomic::AtomicUsize,
     expect_scoped_windows: bool,
+    shares_keyboard: bool,
 }
 
 impl ObservationOps for CapturingAdapter {
@@ -130,6 +132,19 @@ impl InputOps for CapturingAdapter {}
 impl SystemOps for CapturingAdapter {
     crate::adapter::guarded_interaction_lease!();
     crate::adapter::exact_window_focus!();
+
+    fn targeted_press_shares_session_keyboard(&self) -> bool {
+        self.shares_keyboard
+    }
+
+    fn acquire_scoped_interaction_lease(
+        &self,
+        scope: crate::InteractionLeaseScope,
+        deadline: crate::Deadline,
+    ) -> Result<crate::InteractionLease, AdapterError> {
+        *self.scope.lock().unwrap() = Some(scope);
+        crate::InteractionLease::guarded(deadline, ())
+    }
 
     fn press_key_for_app(
         &self,
@@ -209,6 +224,48 @@ fn global_press_uses_only_caller_authorized_policy() {
         *adapter.global_policy.lock().unwrap(),
         Some(crate::InteractionPolicy::headed())
     );
+}
+
+#[test]
+fn a_session_keyboard_press_takes_the_machine_lease() {
+    let adapter = CapturingAdapter {
+        shares_keyboard: true,
+        ..Default::default()
+    };
+    let mut request = args("ctrl+tab", false);
+    request.app = Some("Editor".into());
+    execute(request, &adapter, &CommandContext::default()).unwrap();
+    assert!(adapter.scope.lock().unwrap().as_ref().unwrap().is_global());
+}
+
+#[test]
+fn a_per_process_press_keeps_the_application_lease() {
+    let adapter = CapturingAdapter::default();
+    let mut request = args("ctrl+tab", false);
+    request.app = Some("Editor".into());
+    execute(request, &adapter, &CommandContext::default()).unwrap();
+    let scope = adapter.scope.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        scope,
+        crate::InteractionLeaseScope::app(
+            Some("com.example.Editor"),
+            Some(crate::ProcessId::new(42)),
+        )
+    );
+}
+
+#[test]
+fn headed_press_keeps_the_machine_lease_without_a_session_keyboard() {
+    let adapter = CapturingAdapter::default();
+    let mut request = args("a", false);
+    request.app = Some("Editor".into());
+    execute(
+        request,
+        &adapter,
+        &CommandContext::default().with_headed(true),
+    )
+    .unwrap();
+    assert!(adapter.scope.lock().unwrap().as_ref().unwrap().is_global());
 }
 
 #[test]

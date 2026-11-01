@@ -19,7 +19,7 @@ finite deadline and do not take the interaction lease.
 |------------------|----------|
 | read + read | Both may run concurrently; neither waits for the interaction lease |
 | read + mutation | The read does not wait for the lease and may overlap the mutation; its result is a point-in-time observation, not a transaction |
-| mutation + mutation | One lease holder runs at a time for the same OS user; the waiter consumes its command deadline and returns a structured timeout if it cannot acquire the lease |
+| mutation + mutation | Application-scoped leases for different applications run together. The same application, and every machine-wide lease (no target, shared pointer or keyboard, focus steal, or `press` into the session keyboard on Linux and Windows), runs one holder at a time. A waiter consumes its command deadline and returns a structured timeout if it cannot acquire the lease |
 | native-handle call on another thread | Rejected with `AD_RESULT_ERR_INVALID_ARGS`; use a qualified ref instead |
 
 Snapshots, finds, gets, display/window/app listings, screenshots, clipboard
@@ -31,10 +31,16 @@ threads, but the snapshot can overlap the action; callers that require
 observe-then-act ordering must wait for the snapshot result before dispatching
 the action.
 
-Desktop mutations take a process-independent lock: on macOS and Linux an
-advisory lock at `/tmp/agent-desktop-<uid>/interaction.lock`, on Windows a
-token-derived lock file. CLI and FFI builds therefore serialize mutations across
-threads, processes and different HOME values for the same user. The lock is
+Desktop mutations take process-independent locks. On macOS and Linux the
+machine-wide lock is an advisory lock at
+`/tmp/agent-desktop-<uid>/interaction.lock`. An application lease holds that
+file in shared mode and then exclusive locks under `apps/` keyed by bundle id
+and process id. On Windows the same split uses a token-derived lock file:
+exclusive for the machine-wide lease, shared for an application lease, plus
+per-application lock files. A machine-wide lease is exclusive and waits until
+application leases release. CLI and FFI builds therefore let different
+applications run together, and serialize everything else, across threads,
+processes and different HOME values for the same user. The lock is
 command-scoped, not transaction-scoped: another actor may change the UI between
 an observation and a later action, or between two separate actions.
 

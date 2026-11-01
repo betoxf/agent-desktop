@@ -131,8 +131,9 @@ are not exposed over the ABI. A bare `@eN` ref returns
 
 - **Threading.** Entrypoints may be called from any host thread. Native handles
   stay on the adapter and thread that created them; pass qualified refs across
-  threads. Desktop mutations take the same cross-process interaction lease as the
-  CLI; reads take no lease and carry finite deadlines. See
+  threads. Desktop mutations take the same cross-process interaction leases as the
+  CLI (per application, or machine-wide when the action uses the shared pointer,
+  keyboard, or focus); reads take no lease and carry finite deadlines. See
   [threading.md](references/threading.md) for the read/read, read/mutation, and
   mutation/mutation matrix.
 

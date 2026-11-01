@@ -18,6 +18,7 @@
 mod dacl;
 mod directory;
 mod identity;
+mod scoped;
 mod sid;
 
 use std::path::{Path, PathBuf};
@@ -45,6 +46,13 @@ const LEASE_PURPOSE: &str = "desktop interaction lease";
 
 pub(crate) fn acquire(deadline: Deadline) -> Result<InteractionLease, AdapterError> {
     acquire_impl(&directory::canonical_root()?, deadline)
+}
+
+pub(crate) fn acquire_scoped(
+    scope: &agent_desktop_core::InteractionLeaseScope,
+    deadline: Deadline,
+) -> Result<InteractionLease, AdapterError> {
+    scoped::acquire_scope(scope, deadline)
 }
 
 pub(crate) fn adopt_inherited(

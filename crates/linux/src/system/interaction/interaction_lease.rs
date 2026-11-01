@@ -2,14 +2,24 @@ use std::os::fd::RawFd;
 
 use agent_desktop_core::{
     AdapterError, Deadline, ErrorCode, INTERACTION_LEASE_FD_ENV, InteractionLease,
-    acquire_unix_interaction_lease, adopt_inherited_unix_interaction_lease,
+    adopt_inherited_unix_interaction_lease,
 };
 
 const INVALID_FD: &str = "Inherited interaction lease FD must be a nonnegative integer";
 
 pub(crate) fn acquire(deadline: Deadline) -> Result<InteractionLease, AdapterError> {
+    acquire_for(
+        agent_desktop_core::InteractionLeaseScope::global(),
+        deadline,
+    )
+}
+
+pub(crate) fn acquire_for(
+    scope: agent_desktop_core::InteractionLeaseScope,
+    deadline: Deadline,
+) -> Result<InteractionLease, AdapterError> {
     let Some(raw) = std::env::var_os(INTERACTION_LEASE_FD_ENV) else {
-        return acquire_unix_interaction_lease(deadline);
+        return agent_desktop_core::acquire_unix_interaction_lease_for(&scope, deadline);
     };
     let raw = raw.into_string().map_err(|_| {
         AdapterError::new(

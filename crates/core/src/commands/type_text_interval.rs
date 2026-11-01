@@ -164,12 +164,15 @@ fn deliver(
     request: crate::ActionRequest,
     timeout_ms: u64,
 ) -> Result<crate::ActionResult, AppError> {
+    let pid = burst.process.as_ref().map(|process| process.pid);
+    let real_input = request.policy.allow_focus_steal || request.policy.allow_cursor_move;
     let request = match &burst.process {
         Some(process) => request.with_expected_process(process.clone()),
         None => request,
     };
     let deadline = crate::Deadline::after(timeout_ms)?;
-    let lease = adapter.acquire_interaction_lease(deadline)?;
+    let scope = crate::InteractionLeaseScope::for_input(real_input, None, pid);
+    let lease = adapter.acquire_scoped_interaction_lease(scope, deadline)?;
     Ok(adapter.execute_action(&burst.handle, request, &lease)?)
 }
 

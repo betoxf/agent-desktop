@@ -23,6 +23,16 @@ pub trait SystemOps: Send + Sync {
         Err(AdapterError::not_supported("acquire_interaction_lease"))
     }
 
+    /// `Global` takes the machine-wide lease. `App` takes that application's
+    /// lease. Adapters that have not split the lease keep the machine-wide one.
+    fn acquire_scoped_interaction_lease(
+        &self,
+        _scope: crate::session::lease_scope::InteractionLeaseScope,
+        deadline: Deadline,
+    ) -> Result<InteractionLease, AdapterError> {
+        self.acquire_interaction_lease(deadline)
+    }
+
     /// An adapter that never overrides this has not probed permissions at all,
     /// which is not the same fact as a user denying one. `Unknown` routes through
     /// `unknown_accessibility_means_unsupported` to `PLATFORM_NOT_SUPPORTED`
@@ -231,6 +241,11 @@ pub trait SystemOps: Send + Sync {
 
     fn focused_window(&self, _deadline: Deadline) -> Result<Option<WindowInfo>, AdapterError> {
         Err(AdapterError::not_supported("focused_window"))
+    }
+
+    /// Named `press` injects modifier key edges into one session keyboard.
+    fn targeted_press_shares_session_keyboard(&self) -> bool {
+        false
     }
 
     fn press_key_for_app(

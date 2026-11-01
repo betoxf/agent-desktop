@@ -47,11 +47,11 @@ Entrypoints may be called from any host thread. Native handles are the exception
   <tbody>
     <tr><td>read and read</td><td>Both run concurrently.</td></tr>
     <tr><td>read and mutation</td><td>The read does not wait and may overlap the mutation; its result is a point-in-time observation.</td></tr>
-    <tr><td>mutation and mutation</td><td>One holder of the interaction lock runs at a time for the same OS user. A waiter that cannot get it returns a structured timeout.</td></tr>
+    <tr><td>mutation and mutation</td><td>Different applications run together. The same application, and any machine-wide mutation (no target, shared pointer or keyboard, or focus steal), has one holder at a time for the same OS user. A waiter that cannot get the lock returns a structured timeout.</td></tr>
   </tbody>
 </table>
 
-Snapshots, finds, listings, screenshots, clipboard reads, status, and trace reads are observations. Ref actions, native-handle actions, input synthesis, clipboard writes, app and window changes, and notification actions are mutations. The lock is shared with the CLI, so mutations serialize across threads and processes of one user. It is scoped to one command, not a transaction: the UI can change between an observation and a later action.
+Snapshots, finds, listings, screenshots, clipboard reads, status, and trace reads are observations. Ref actions, native-handle actions, input synthesis, clipboard writes, app and window changes, and notification actions are mutations. The locks are shared with the CLI. Headless actions on different applications run together. The same application, and every machine-wide mutation, runs one at a time across threads and processes of one user. A lock covers one command, not a transaction: the UI can change between an observation and a later action.
 
 - `ad_adapter_destroy` revokes the adapter. Calls already in flight finish; calls that start afterward return `AD_RESULT_ERR_INVALID_ARGS`.
 - `ad_wait` blocks its calling thread for at most `scope.timeout_ms`.

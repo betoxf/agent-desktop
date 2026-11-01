@@ -26,17 +26,21 @@ impl SystemOps for WindowsAdapter {
         crate::system::cursor_overlay::child::entry_from_env()
     }
 
-    /// The cross-process desktop-interaction lease: an exclusive,
-    /// token-derived lock file when `AGENT_DESKTOP_INTERACTION_LEASE_HANDLE`
-    /// is unset, or adoption of the inherited handle it names - re-verifying
-    /// both the handle's identity and its exclusivity before trusting it,
-    /// because a handle's share mode cannot be read back on Windows and
-    /// identity alone proves naming rather than exclusion - when it is set.
-    /// Mirrors `MacOSAdapter`'s two-branch override over
-    /// `acquire_unix_interaction_lease` / `adopt_inherited_unix_interaction_lease`.
     #[cfg(target_os = "windows")]
     fn acquire_interaction_lease(
         &self,
+        deadline: Deadline,
+    ) -> Result<InteractionLease, AdapterError> {
+        self.acquire_scoped_interaction_lease(
+            agent_desktop_core::InteractionLeaseScope::global(),
+            deadline,
+        )
+    }
+
+    #[cfg(target_os = "windows")]
+    fn acquire_scoped_interaction_lease(
+        &self,
+        scope: agent_desktop_core::InteractionLeaseScope,
         deadline: Deadline,
     ) -> Result<InteractionLease, AdapterError> {
         match std::env::var(crate::system::interaction_lease::INTERACTION_LEASE_HANDLE_ENV) {
@@ -49,7 +53,7 @@ impl SystemOps for WindowsAdapter {
                 })?;
                 crate::system::interaction_lease::adopt_inherited(raw, deadline)
             }
-            Err(_) => crate::system::interaction_lease::acquire(deadline),
+            Err(_) => crate::system::interaction_lease::acquire_scoped(&scope, deadline),
         }
     }
 
@@ -257,6 +261,11 @@ impl SystemOps for WindowsAdapter {
     /// Verify-only composition over the keyboard primitive. Core's headed
     /// path already activated; this never raises (A9-3: SendInput has no
     /// per-pid targeting).
+    /// `SendInput` presses modifier keys into the session keyboard.
+    fn targeted_press_shares_session_keyboard(&self) -> bool {
+        true
+    }
+
     fn press_key_for_app(
         &self,
         process: ProcessIdentity,

@@ -68,9 +68,10 @@ observation, actions and capture there fail or return nothing.
   "unavailable"`) when the field exposes no readable Text selection, and can
   verify when one is readable: confirm with a fresh `get`.
 - **`press --app` writes to the foreground queue** with no per-process
-  targeting. A headless press to a non-frontmost app fails closed. A
-  non-interactive caller (service, scheduled task, CI job) gets
-  `delivered_unverified`.
+  targeting, and takes the machine-wide interaction lease because `SendInput`
+  holds modifier keys in the session keyboard. A headless press to a
+  non-frontmost app fails closed. A non-interactive caller (service, scheduled
+  task, CI job) gets `delivered_unverified`.
 - **`launch` takes an absolute path or a bare name** under System32 or the
   Windows directory, with or without `.exe` (`notepad` or `notepad.exe`), not
   a display name. Use `list-apps` to find a running app.

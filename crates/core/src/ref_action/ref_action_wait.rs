@@ -90,9 +90,14 @@ fn execute_with_deadline(
     );
     let cursor = crate::cursor_overlay::hold_cursor(context.context, deadline);
     crate::ref_action::presentation::before_lease(context, &request, deadline, cursor.is_ok());
+    let scope = crate::InteractionLeaseScope::for_input(
+        request.policy.allow_focus_steal || request.policy.allow_cursor_move,
+        None,
+        Some(context.entry.process.pid),
+    );
     let lease = context
         .adapter
-        .acquire_interaction_lease(deadline)
+        .acquire_scoped_interaction_lease(scope, deadline)
         .map_err(|error| state.attach_error_metrics(error))?;
     if deadline.is_expired() {
         return Err(state.attach_error_metrics(deadline.timeout_error()));

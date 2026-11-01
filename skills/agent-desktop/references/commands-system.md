@@ -206,9 +206,10 @@ Multi-agent cursors (macOS and Windows): start with `session start --cursor --mu
 
 - Desktop UI actions then require an agent id: global `--agent-id <id>` or `AGENT_DESKTOP_AGENT_ID`. The flag wins. Observations, clipboard commands and session administration do not need one.
 - An id has 1 to 64 letters, digits, `-` or `_`. It is scoped by session. Each distinct id gets its own cursor, and a reused id reuses its cursor.
-- A headless action moves its cursor before it takes the interaction lease, so several agents' cursors travel at the same time. The actions still take turns, and commands that draw the same cursor take turns from its travel to its click effect.
+- A headless action moves its cursor before it takes the interaction lease, so several agents' cursors travel at the same time. Commands that draw the same cursor take turns from its travel to its click effect.
 - `--agent-id <id> cursor-overlay enable` saves a style for that agent. Do not add `--multi-agent` to it.
 - `cursor-overlay disable` and `session end` stop every cursor in the session, even when you pass an agent id.
+- Headless actions aimed at different applications run at the same time. Actions on one application, and any action that moves the real pointer, types through the shared keyboard, or steals focus, still run one at a time. `press` with no `--app` takes that machine-wide lease, and so does `press --app` on Linux and Windows. On macOS a headless `press --app` keeps the application lease. A command with no application target takes the machine-wide lease too.
 
 ## status, permissions, version
 

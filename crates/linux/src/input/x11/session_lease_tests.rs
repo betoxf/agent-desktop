@@ -1,8 +1,11 @@
 use std::process::Command;
-use std::sync::{Arc, mpsc::channel};
+use std::sync::{Arc, Mutex, mpsc::channel};
 use std::time::Duration;
 
-use agent_desktop_core::{ErrorCode, acquire_unix_interaction_lease};
+use agent_desktop_core::{
+    ErrorCode, InteractionLeaseScope, ProcessId, acquire_unix_interaction_lease,
+    acquire_unix_interaction_lease_for,
+};
 
 use super::{CallEnv, run_journaled};
 use crate::input::x11::fake_sink::{FakeSink, deadline};
@@ -30,6 +33,11 @@ fn session_lease_contender() {
     }
 }
 
+fn lease_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn contender(expected: &str) -> bool {
     const FILTER: &str = "input::x11::session::lease_tests::session_lease_contender";
     let output = Command::new(std::env::current_exe().unwrap())
@@ -44,6 +52,7 @@ fn contender(expected: &str) -> bool {
 
 #[test]
 fn a_timed_out_input_worker_keeps_other_processes_out_until_exit() {
+    let _guard = lease_test_lock();
     let lease = acquire_unix_interaction_lease(deadline(30_000)).unwrap();
     let slot = Arc::default();
     let (started, ready) = channel();
@@ -73,4 +82,28 @@ fn a_timed_out_input_worker_keeps_other_processes_out_until_exit() {
     assert!(contender("free"), "the worker must close its lease on exit");
     assert_eq!(error.code, ErrorCode::Timeout);
     assert!(blocked, "another process overlapped the abandoned worker");
+}
+
+#[test]
+fn a_headless_app_lease_reaches_the_input_worker() {
+    let _guard = lease_test_lock();
+    let scope = InteractionLeaseScope::app(Some("com.example.notes"), Some(ProcessId::new(4242)));
+    let lease =
+        acquire_unix_interaction_lease_for(&scope, deadline(5_000)).expect("an application lease");
+    let delivery = run_journaled(
+        || Ok(FakeSink::new()),
+        Vec::new(),
+        &mut || Ok(()),
+        CallEnv {
+            deadline: deadline(5_000),
+            journal: None,
+            slot: Arc::default(),
+            release_on_signal: false,
+            lease: Some(&lease),
+        },
+    );
+    assert!(
+        delivery.is_ok(),
+        "the worker must retain an application lease: {delivery:?}"
+    );
 }

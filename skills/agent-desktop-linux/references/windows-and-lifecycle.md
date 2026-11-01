@@ -277,7 +277,8 @@ decide whether that is acceptable before you call it.
 ## `press --app` and background targets
 
 Headless `press --app <name>` delivers only while the target process owns the
-active window. On X11 a background or minimized app is refused: `ACTION_FAILED`,
+active window. It takes the machine-wide interaction lease: X11 and Wayland
+inject the chord, modifiers included, into the session keyboard. On X11 a background or minimized app is refused: `ACTION_FAILED`,
 `check: window_active`, cause `display_active_window`, `not_delivered`; the
 message says the application's active window could not be confirmed. `--headed`
 brings the window forward, un-minimizes it and sends the keys (X11). On Wayland,

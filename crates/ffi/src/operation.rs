@@ -1,4 +1,6 @@
-use agent_desktop_core::{AdapterError, Deadline, InteractionLease, PlatformAdapter};
+use agent_desktop_core::{
+    AdapterError, Deadline, InteractionLease, InteractionLeaseScope, PlatformAdapter,
+};
 
 pub(crate) const DEFAULT_FFI_TIMEOUT_MS: u64 = 5_000;
 
@@ -7,12 +9,19 @@ pub(crate) fn deadline() -> Result<Deadline, AdapterError> {
 }
 
 pub(crate) fn lease(adapter: &dyn PlatformAdapter) -> Result<InteractionLease, AdapterError> {
+    lease_for(adapter, InteractionLeaseScope::global())
+}
+
+pub(crate) fn lease_for(
+    adapter: &dyn PlatformAdapter,
+    scope: InteractionLeaseScope,
+) -> Result<InteractionLease, AdapterError> {
     let deadline = deadline()?;
     #[cfg(unix)]
     if let Some(raw_fd) = inherited_lease_fd()? {
         return agent_desktop_core::adopt_inherited_unix_interaction_lease(raw_fd, deadline);
     }
-    adapter.acquire_interaction_lease(deadline)
+    adapter.acquire_scoped_interaction_lease(scope, deadline)
 }
 
 #[cfg(unix)]

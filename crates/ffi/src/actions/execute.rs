@@ -91,8 +91,20 @@ pub unsafe extern "C" fn ad_execute_action_with_policy(
                     return AdResult::ErrInvalidArgs;
                 }
             };
+        let pid = process.pid;
         let request = action_request(policy, core_action).with_expected_process(process);
-        let lease = crate::operation::interaction_lease!(adapter.inner.as_ref());
+        let scope = agent_desktop_core::InteractionLeaseScope::for_input(
+            request.policy.allow_focus_steal || request.policy.allow_cursor_move,
+            None,
+            Some(pid),
+        );
+        let lease = match crate::operation::lease_for(adapter.inner.as_ref(), scope) {
+            Ok(lease) => lease,
+            Err(error) => {
+                error::set_last_error(&error);
+                return error::last_error_code();
+            }
+        };
         if let Action::Drag(params) = &request.action
             && let Err(error) = params.validate(lease.deadline())
         {

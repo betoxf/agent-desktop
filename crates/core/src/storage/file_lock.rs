@@ -16,8 +16,26 @@ pub struct FileLock {
 
 impl FileLock {
     pub fn acquire(path: &Path, deadline: Deadline, purpose: &str) -> Result<Self, AdapterError> {
+        Self::acquire_mode(path, deadline, purpose, false)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn acquire_shared(
+        path: &Path,
+        deadline: Deadline,
+        purpose: &str,
+    ) -> Result<Self, AdapterError> {
+        Self::acquire_mode(path, deadline, purpose, true)
+    }
+
+    fn acquire_mode(
+        path: &Path,
+        deadline: Deadline,
+        purpose: &str,
+        shared: bool,
+    ) -> Result<Self, AdapterError> {
         let file = crate::storage::private_file::open_private_lock(path, true).map_err(io_error)?;
-        lock_file(file, deadline, purpose, path)
+        lock_file(file, deadline, purpose, path, shared)
     }
 
     pub(crate) fn is_held(path: &Path) -> bool {
@@ -85,7 +103,7 @@ impl FileLock {
                 "Inherited interaction lease does not identify the canonical lock file",
             ));
         }
-        lock_file(inherited, deadline, purpose, canonical_path)
+        lock_file(inherited, deadline, purpose, canonical_path, false)
     }
 }
 
@@ -96,13 +114,19 @@ fn lock_file(
     deadline: Deadline,
     purpose: &str,
     path: &Path,
+    shared: bool,
 ) -> Result<FileLock, AdapterError> {
     let mut contention_count = 0_u64;
     loop {
         if deadline.is_expired() {
             return Err(lock_timeout(deadline, purpose, path, contention_count));
         }
-        match file.try_lock() {
+        let attempt = if shared {
+            file.try_lock_shared()
+        } else {
+            file.try_lock()
+        };
+        match attempt {
             Ok(()) => {
                 if deadline.is_expired() {
                     return Err(lock_timeout(deadline, purpose, path, contention_count));

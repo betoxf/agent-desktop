@@ -24,7 +24,8 @@ pub fn execute(args: ResizeWindowArgs, adapter: &dyn PlatformAdapter) -> Result<
     }
     .validate()?;
     let win = resolve_window_for_app(args.app.as_deref(), args.window_id.as_deref(), adapter)?;
-    let lease = crate::commands::helpers::acquire_interaction_lease(adapter)?;
+    let scope = crate::InteractionLeaseScope::app(None, Some(win.pid));
+    let lease = adapter.acquire_scoped_interaction_lease(scope, crate::Deadline::standard()?)?;
     let live = revalidate_window_for_mutation(adapter, &win, &lease)?;
     let report = adapter.window_op(
         &live,

@@ -80,12 +80,16 @@ case-insensitive `.exe` name: `csrss.exe`, `wininit.exe`, `winlogon.exe`,
 
 ## Cross-Process Interaction Lease
 
-Interactive work holds an exclusive, token-derived lock file, so two concurrent
-agent-desktop processes cannot interleave focus changes, clicks and typing on
-the same desktop. An inherited-handle mode
-(`AGENT_DESKTOP_INTERACTION_LEASE_HANDLE`) lets a parent pass its lease to a
-child after re-verifying identity and exclusivity. If acquisition fails, wait
-for the other process to finish. Do not bypass the lease.
+Interactive work holds a token-derived lock file. An action aimed at one
+application holds that file in shared mode and an exclusive lock for the
+application, so a different application can run at the same time. The same
+application stays serialized. A machine-wide lease, used when the command has
+no application or when it moves the real pointer, types through the shared
+keyboard, or steals focus, opens the lock file exclusively and waits until
+application leases release. An inherited-handle mode
+(`AGENT_DESKTOP_INTERACTION_LEASE_HANDLE`) lets a parent pass its machine-wide
+lease to a child after re-verifying identity and exclusivity. If acquisition
+fails, wait for the holder to finish. Do not bypass the lease.
 
 ## The Cursor Overlay's Control Pipe
 
