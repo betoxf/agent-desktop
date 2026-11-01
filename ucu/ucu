@@ -260,7 +260,10 @@ def build_engine():
     built = Path(os.environ.get("CARGO_TARGET_DIR") or WORKSPACE / "target") / "release/agent-desktop"
     if not built.exists():
         return f"the build left no {built}"
-    shutil.copy2(built, proxy.ENGINE)
+    # macOS kills a signed binary that was overwritten in place, so the new one gets a file of its own.
+    temporary = proxy.ENGINE.with_name(proxy.ENGINE.name + ".ucu-tmp")
+    shutil.copy2(built, temporary)
+    os.replace(temporary, proxy.ENGINE)
     return None
 
 

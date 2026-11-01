@@ -251,11 +251,20 @@ final class AgentDesktop {
     var displayID: CGDirectDisplayID? { (display?.value(forKey: "displayID") as? NSNumber)?.uint32Value }
 
     // Apps hear about a new display a moment after macOS shows it. Until then, one that gets a window moved there
-    // brings it back to a screen it knows, in part onto the user's.
+    // brings it back to a screen it knows, in part onto the user's. A display that was just made also starts out on
+    // top of the user's screen, so a window sent there before macOS moves it aside would land in front of them.
     var isReady: Bool {
-        -made.timeIntervalSinceNow > Self.settle && NSScreen.screens.contains {
+        -made.timeIntervalSinceNow > Self.settle && isApart && NSScreen.screens.contains {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID
         }
+    }
+
+    var isApart: Bool {
+        guard let id = displayID, let area = bounds else { return false }
+        var count: UInt32 = 0
+        var displays = [CGDirectDisplayID](repeating: 0, count: 32)
+        guard CGGetActiveDisplayList(32, &displays, &count) == .success else { return false }
+        return displays.prefix(Int(count)).allSatisfy { $0 == id || !CGDisplayBounds($0).intersects(area) }
     }
 }
 
