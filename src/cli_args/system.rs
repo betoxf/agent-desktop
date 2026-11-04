@@ -306,7 +306,7 @@ pub(crate) struct OpenSystemSurfaceArgs {
     #[arg(
         long,
         value_enum,
-        help = "Shell surface to open: start-menu, taskbar, system-tray, system-tray-overflow, action-center"
+        help = "Shell surface to open: start-menu, taskbar, system-tray, system-tray-overflow, action-center, dock, menu-bar-extras"
     )]
     pub surface: Surface,
 }

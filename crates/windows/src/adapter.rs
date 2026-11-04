@@ -80,16 +80,6 @@ impl ObservationOps for WindowsAdapter {
         .into_accessibility_tree()
     }
 
-    /// Re-resolves a stored ref to a live element, fail-closed - the
-    /// drill-down root `snapshot --root @ref` needs.
-    fn resolve_element_strict(
-        &self,
-        entry: &RefEntry,
-        deadline: Deadline,
-    ) -> Result<NativeHandle, AdapterError> {
-        crate::tree::resolve::resolve_element_strict(entry, deadline)
-    }
-
     fn resolve_locator_anchor(
         &self,
         entry: &RefEntry,

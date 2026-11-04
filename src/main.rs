@@ -3,8 +3,6 @@
 mod batch;
 mod cli;
 mod cli_args;
-#[cfg(target_os = "macos")]
-mod command_host;
 mod command_policy;
 mod diagnostic;
 mod dispatch;
@@ -33,10 +31,6 @@ use std::process::ExitCode;
 const EXIT_INVALID_ARGS: u8 = 2;
 
 fn main() -> ExitCode {
-    #[cfg(target_os = "macos")]
-    if command_host::is_host_process() {
-        unsafe { libc::umask(0o077) };
-    }
     let code = run_command();
     #[cfg(target_os = "linux")]
     agent_desktop_linux::end_input_session();
@@ -60,14 +54,7 @@ fn run_command() -> ExitCode {
         return ExitCode::from(exit_code);
     }
     #[cfg(target_os = "macos")]
-    if command_host::is_host_process() {
-        init_tracing(false);
-        return match command_host::run() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(AppError::Io(error)) => report_output_failure(error),
-            Err(error) => finish("host", Err(error)),
-        };
-    }
+    agent_desktop_macos::stop_legacy_command_hosts();
     run()
 }
 
@@ -131,17 +118,6 @@ fn run() -> ExitCode {
     };
 
     let cmd_name = cmd.name();
-    #[cfg(target_os = "macos")]
-    if !cmd.needs_caller_process() {
-        return match command_host::forward(&cli, &cmd) {
-            Ok(response) => match emit_response(&response) {
-                Err(error) => report_output_failure(error),
-                Ok(()) if response["ok"] == true => ExitCode::SUCCESS,
-                Ok(()) => ExitCode::FAILURE,
-            },
-            Err(error) => finish(cmd_name, Err(error)),
-        };
-    }
     finish(cmd_name, execute(cli, cmd))
 }
 
@@ -197,10 +173,6 @@ fn execute_with_deadline(
             let mut context = context
                 .with_agent_id(agent_id)
                 .map_err(pre_dispatch_error)?;
-            #[cfg(target_os = "macos")]
-            if command_host::is_host_process() {
-                context = context.with_pinned_session_namespace();
-            }
             if let Some(deadline) = deadline {
                 context = context.with_inherited_deadline(deadline);
             }

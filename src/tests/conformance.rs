@@ -49,7 +49,8 @@ impl ObservationOps for ContractAdapter {
             identity: LiveIdentity {
                 name: LocatorField::Known("OK".into()),
                 description: LocatorField::Absent,
-                identifiers: IdentifierEvidence::absent(),
+                identifiers: IdentifierEvidence::absent()
+                    .with_retained_object("axtok1:contract-node".into()),
             },
             state: ElementState {
                 role: "button".into(),
@@ -168,12 +169,13 @@ fn entry(bounds: Rect) -> RefEntry {
             process_instance: Some("contract-process".into()),
         },
         identity: RefEntryIdentity {
-            retained_object: None,
+            retained_object: Some("axtok1:contract-node".into()),
             role: "button".into(),
             name: Some("OK".into()),
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: false,
         },
         geometry: RefGeometry {
             bounds_space: None,
@@ -190,6 +192,7 @@ fn entry(bounds: Rect) -> RefEntry {
             source_window_title: None,
             source_window_bounds_hash: None,
             source_surface: SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         scope: RefScope {
             root_ref: None,

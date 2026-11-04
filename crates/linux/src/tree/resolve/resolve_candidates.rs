@@ -8,7 +8,7 @@ use crate::tree::vocabulary::roles::may_resolve_to;
 use crate::tree::walk::walker_expand::read_observed;
 use crate::tree::{AtspiElement, ObservedRead, Walk, WalkLimits, WalkedNode};
 
-const NODES_IN_FLIGHT: usize = 8;
+const NODES_IN_FLIGHT: usize = 32;
 
 fn may_be_target(node: &WalkedNode<ObservedRead>, entry: &RefEntry) -> bool {
     node.payload

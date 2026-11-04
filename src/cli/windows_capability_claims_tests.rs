@@ -94,7 +94,7 @@ fn windows_adapter_still_refuses_what_the_skill_marks_unavailable() {
     );
     assert_eq!(
         quick_settings.code,
-        ErrorCode::PlatformNotSupported,
+        ErrorCode::InvalidArgs,
         "quick-settings changed behaviour; update the Windows skill's capability table"
     );
     let detail = quick_settings.platform_detail.expect(

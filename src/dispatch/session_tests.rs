@@ -212,68 +212,6 @@ fn session_end_reports_uncertain_when_overlay_teardown_fails_after_persisting() 
 }
 
 #[test]
-fn a_pinned_namespace_rejects_foreign_session_end_and_global_gc() {
-    let context = CommandContext::default().with_pinned_session_namespace();
-    let foreign_end = super::dispatch(
-        SessionArgs {
-            action: SessionAction::End(SessionEndArgs {
-                id: Some("other".into()),
-            }),
-        },
-        &NoopAdapter,
-        &context,
-    )
-    .expect_err("ending a foreign session must be rejected");
-    assert_eq!(foreign_end.code(), "INVALID_ARGS");
-    assert!(
-        foreign_end
-            .to_string()
-            .contains("cannot end a foreign session")
-    );
-
-    let global_gc = super::dispatch(
-        SessionArgs {
-            action: SessionAction::Gc(SessionGcArgs {
-                older_than: None,
-                ended: false,
-            }),
-        },
-        &NoopAdapter,
-        &context,
-    )
-    .expect_err("global gc must be rejected in a pinned namespace");
-    assert_eq!(global_gc.code(), "INVALID_ARGS");
-}
-
-#[test]
-fn a_pinned_namespace_still_allows_ending_its_own_session() {
-    let _home = HomeGuard::new();
-    let manifest = agent_desktop_core::session::start_session(StartSessionOptions {
-        trace: SessionTraceMode::Off,
-        artifacts: ArtifactsMode::Events,
-        name: None,
-    })
-    .unwrap();
-    let context = CommandContext::new(Some(manifest.id.clone()), None, false)
-        .unwrap()
-        .with_pinned_session_namespace();
-    let result = super::dispatch(
-        SessionArgs {
-            action: SessionAction::End(SessionEndArgs {
-                id: Some(manifest.id.clone()),
-            }),
-        },
-        &NoopAdapter,
-        &context,
-    );
-    result.expect("a pinned namespace may end its own session");
-    let ended = agent_desktop_core::session::read_manifest(&manifest.id)
-        .unwrap()
-        .expect("manifest remains readable");
-    assert!(ended.ended_at.is_some());
-}
-
-#[test]
 fn session_gc_ended_reclaims_an_ended_session_that_recorded_trace_events() {
     let home = HomeGuard::new();
     let manifest =

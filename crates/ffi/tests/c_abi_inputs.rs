@@ -86,6 +86,29 @@ fn exact_resolve_rejects_invalid_utf8_name_at_the_name_boundary() {
 }
 
 #[test]
+fn exact_resolve_refuses_an_entry_with_no_capture_proof() {
+    with_adapter(|adapter| unsafe {
+        let role = std::ffi::CString::new("button").unwrap();
+        let name = std::ffi::CString::new("Save").unwrap();
+        let process_instance = std::ffi::CString::new("generation-1").unwrap();
+        let mut exact = default_exact_ref_entry();
+        exact.process_instance = process_instance.as_ptr();
+        exact.entry.process.pid = 1;
+        exact.entry.identity.role = role.as_ptr();
+        exact.entry.identity.name = name.as_ptr();
+        let mut out = AdNativeHandle {
+            ptr: std::ptr::null(),
+        };
+        let rc = ad_resolve_element_exact(adapter, &exact, &mut out);
+        assert_eq!(rc, AdResult::ErrActionNotSupported);
+        assert!(out.ptr.is_null());
+        let message = CStr::from_ptr(ad_last_error_message()).to_string_lossy();
+        assert!(message.contains("no capture proof"), "message={message}");
+        assert!(!message.contains("--headed"), "message={message}");
+    });
+}
+
+#[test]
 fn exact_resolve_rejects_invalid_utf8_description_at_the_description_boundary() {
     with_adapter(|adapter| unsafe {
         let role = std::ffi::CString::new("button").unwrap();

@@ -154,6 +154,7 @@ fn saved_snapshot_and_click_capture_use_exact_source_evidence() {
     let window = window();
     let entry: RefEntry = serde_json::from_value(json!({
         "pid": 5, "process_instance": "test-instance", "role": "button", "name": "Save",
+        "retained_object": "axtok1:page-1:node-0",
         "path": [0], "source_surface": "window", "source_window_id": "w-test",
         "source_window_bounds_hash": window.bounds.unwrap().bounds_hash(),
         "states": [], "available_actions": ["Click"], "bounds": window.bounds,

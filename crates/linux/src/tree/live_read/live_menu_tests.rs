@@ -138,17 +138,42 @@ fn menu_live_identity_uses_the_fresh_context_and_actual_live_object_path() {
     let live =
         element_via(&mut reader, &menu_handle("/menu/open"), deadline()).expect("live menu item");
 
-    assert_eq!(verdict(&menu_ref(&captured), &live), IdentityMatch::Match);
-    let expected = captured.encode(":1.1/menu/open");
+    let token = live
+        .identity
+        .identifiers
+        .retained_object()
+        .expect("a menu item reports the popup it was read in");
+    let (context, object) = MenuContext::decode(token).expect("a popup context token");
+    assert!(
+        captured.matches(&context),
+        "the context read now, not the stored one"
+    );
+    assert_eq!(object, ":1.1/menu/open");
+    assert_eq!(token, captured.encode(":1.1/menu/open"));
     assert_eq!(
-        live.identity.identifiers.retained_object(),
-        Some(expected.as_str())
+        verdict(&menu_ref(&captured), &live),
+        IdentityMatch::NoMatch,
+        "a popup context and an object path are a place, never the element's identity"
     );
 }
 
 #[test]
-fn changed_incomplete_or_unavailable_menu_context_mismatches_the_snapshot() {
+fn a_changed_incomplete_or_unavailable_menu_context_changes_the_transport_token_only() {
     let captured = MenuContext::test("/menu", 42);
+    let captured_token = captured.encode(":1.1/menu/open");
+    let mut baseline = reader(Some(captured.clone()));
+    let unchanged =
+        element_via(&mut baseline, &menu_handle("/menu/open"), deadline()).expect("live item");
+    assert_eq!(
+        unchanged.identity.identifiers.retained_object(),
+        Some(captured_token.as_str())
+    );
+    assert_eq!(
+        verdict(&menu_ref(&captured), &unchanged),
+        IdentityMatch::NoMatch,
+        "the predicate never separated the popups, so only the token can"
+    );
+
     for current in [
         Some(MenuContext::test("/replacement", 42)),
         Some(MenuContext::test_incomplete("/menu", 42)),
@@ -157,18 +182,44 @@ fn changed_incomplete_or_unavailable_menu_context_mismatches_the_snapshot() {
         let mut reader = reader(current);
         let live =
             element_via(&mut reader, &menu_handle("/menu/open"), deadline()).expect("live item");
+        assert_ne!(
+            live.identity.identifiers.retained_object(),
+            Some(captured_token.as_str()),
+            "the popup context read now is the transport evidence"
+        );
         assert_eq!(verdict(&menu_ref(&captured), &live), IdentityMatch::NoMatch);
     }
 }
 
 #[test]
-fn the_same_context_does_not_hide_a_changed_live_object_path() {
+fn a_changed_live_object_path_changes_the_transport_token_under_the_same_context() {
     let captured = MenuContext::test("/menu", 42);
-    let mut reader = reader(Some(captured.clone()));
-    let live =
-        element_via(&mut reader, &menu_handle("/menu/replacement"), deadline()).expect("live item");
+    let captured_token = captured.encode(":1.1/menu/open");
+    let mut baseline = reader(Some(captured.clone()));
+    let unchanged =
+        element_via(&mut baseline, &menu_handle("/menu/open"), deadline()).expect("live item");
+    assert_eq!(
+        unchanged.identity.identifiers.retained_object(),
+        Some(captured_token.as_str())
+    );
+    assert_eq!(
+        verdict(&menu_ref(&captured), &unchanged),
+        IdentityMatch::NoMatch,
+        "the predicate never separated the two paths, so only the token can"
+    );
 
-    assert_eq!(verdict(&menu_ref(&captured), &live), IdentityMatch::NoMatch);
+    let mut reader = reader(Some(captured.clone()));
+    let moved =
+        element_via(&mut reader, &menu_handle("/menu/replacement"), deadline()).expect("live item");
+    assert_ne!(
+        moved.identity.identifiers.retained_object(),
+        Some(captured_token.as_str()),
+        "the object path read now is the transport evidence"
+    );
+    assert_eq!(
+        verdict(&menu_ref(&captured), &moved),
+        IdentityMatch::NoMatch
+    );
 }
 
 #[test]

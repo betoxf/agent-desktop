@@ -47,6 +47,12 @@ carry the process generation and surface ID of the observed identity.
 ABI 6 and `AD_EXACT_REF_ENTRY_VERSION` 2 add `bounds_space` to `AdRefGeometry`,
 inside `AdExactRefEntry`: an `AD_BOUNDS_SPACE_*` constant naming the frame of
 `bounds`, screen-relative on macOS and Windows and window-relative on Linux.
+
+ABI 7 makes the two exact-entry ref calls,
+`ad_execute_ref_action_exact_with_policy` and `ad_resolve_element_exact`, fail
+closed with `AD_RESULT_ERR_ACTION_NOT_SUPPORTED`: an exact entry carries no retained
+element token and no capture proof, so it cannot be re-identified. Act through
+a snapshot ref with `ad_execute_by_ref`, and get a handle with `ad_find_exact`.
 `ad_execute_by_ref` and `ad_wait` accept only snapshot-qualified refs
 (`@<snapshot_id>:eN`).
 

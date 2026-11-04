@@ -24,8 +24,8 @@ Every pointer the library hands you was allocated by Rust, so C's `free()` canno
     <tr><td><code>ad_dismiss_all_notifications</code></td><td><code>ad_dismiss_all_notifications_free(dismissed, failed)</code></td></tr>
     <tr><td><code>ad_launch_app_exact</code> (the window struct's strings)</td><td><code>ad_release_exact_window_fields(&amp;out)</code></td></tr>
     <tr><td><code>ad_get_tree_exact</code></td><td><code>ad_free_tree(&amp;out)</code></td></tr>
-    <tr><td><code>ad_resolve_element_exact</code>, <code>ad_find_exact</code> (the native handle)</td><td><code>ad_free_handle(adapter, &amp;handle)</code></td></tr>
-    <tr><td><code>ad_execute_action</code>, <code>ad_execute_action_with_policy</code>, <code>ad_execute_ref_action_exact_with_policy</code>, <code>ad_notification_action</code></td><td><code>ad_free_action_result(&amp;out)</code></td></tr>
+    <tr><td><code>ad_find_exact</code> (the native handle)</td><td><code>ad_free_handle(adapter, &amp;handle)</code></td></tr>
+    <tr><td><code>ad_execute_action</code>, <code>ad_execute_action_with_policy</code>, <code>ad_notification_action</code></td><td><code>ad_free_action_result(&amp;out)</code></td></tr>
     <tr><td><code>ad_screenshot</code>, <code>ad_screenshot_window_exact</code></td><td><code>ad_image_buffer_free(buf)</code></td></tr>
   </tbody>
 </table>
@@ -35,6 +35,7 @@ Every pointer the library hands you was allocated by Rust, so C's `free()` canno
 - `ad_free_handle` zeroes the handle, so a second call on the same struct is a no-op. Free handles before you destroy the adapter that produced them.
 - Strings inside a struct belong to the struct's owner. Do not free them one by one.
 - Every fallible function zeroes its out-parameter before validating anything, so calling the paired free function after a failure is safe.
+- `ad_resolve_element_exact` and `ad_execute_ref_action_exact_with_policy` allocate nothing. They fail with `AD_RESULT_ERR_ACTION_NOT_SUPPORTED` and leave their out-parameter null or zeroed.
 
 ## Threading
 

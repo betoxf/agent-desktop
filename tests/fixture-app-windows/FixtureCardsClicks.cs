@@ -79,20 +79,10 @@ namespace AgentDeskFixtureApp
             card.Controls.Add(twinB);
 
             Button moveTwins = NewButton(card, "move-twins", "Move twins", 210, y, 110);
-            // Translating Location alone does not defeat a stored ref for
-            // either twin: agent-desktop's Windows resolver re-identifies a
-            // ref by its stored child-index tree path before it ever reaches
-            // the bounds-hash tie-break (can_use_path_fast_path,
-            // crates/windows/src/tree/resolve/resolve_search.rs), and a bare location
-            // change leaves both twins at their original Controls indices -
-            // the path lands on the exact original element, which is a
-            // correct re-identification, not an ambiguity. Removing and
-            // re-adding both twins shifts every later sibling's index
-            // (moveTwins included), so the stored path for the stale twin now
-            // lands on a control whose identity does not match and the
-            // resolver falls through to the broad search. Only then do two
-            // evidence-identical candidates reach the bounds-hash tier, and
-            // only then does moving both defeat that tie-break too.
+            // Rebuilding the card after the refs are published covers a UI
+            // change between capture and act. Both twins stay refused either
+            // way: a twin is never unique at capture, so no live read and no
+            // path or geometry tie-break is reached (resolve_saved_ref.rs).
             moveTwins.Click += delegate
             {
                 int dx = 14;

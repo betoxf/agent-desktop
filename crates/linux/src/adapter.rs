@@ -59,6 +59,14 @@ impl ObservationOps for LinuxAdapter {
         crate::tree::resolve_element_strict(self.bus(), entry, deadline)
     }
 
+    fn validate_saved_ref_context(
+        &self,
+        entry: &RefEntry,
+        observed_token: Option<&str>,
+    ) -> Result<(), AdapterError> {
+        crate::tree::menu::menu_resolve::validate_observed_context(entry, observed_token)
+    }
+
     fn resolve_locator_anchor(
         &self,
         entry: &RefEntry,
@@ -185,14 +193,13 @@ impl ObservationOps for LinuxAdapter {
 
     fn confirm_pointer_receiver(
         &self,
-        entry: &RefEntry,
+        handle: &NativeHandle,
         point: Point,
         deadline: Deadline,
     ) -> Result<(), AdapterError> {
-        let handle = self.resolve_element_strict(entry, deadline)?;
         crate::input::physical::target_pointer::confirm_receiver(
             self.bus(),
-            &handle,
+            handle,
             &point,
             deadline,
         )

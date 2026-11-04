@@ -12,7 +12,7 @@ agent-desktop snapshot --app gnome-calculator -i --compact
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "snapshot",
   "data": {
@@ -52,11 +52,12 @@ The tree above is trimmed to one button. The real tree nests it under several un
     <tr><th>Field</th><th>Meaning</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>data.app</code>, <code>data.window</code></td><td>The application and the window that was read (<code>id</code>, <code>title</code>).</td></tr>
+    <tr><td><code>data.app</code>, <code>data.window</code></td><td>The application and the window that was read (<code>id</code>, <code>title</code>). <code>data.window</code> is omitted when macOS reads a background app with no window through its process; see <a href="/desktop/surfaces">Surfaces</a>.</td></tr>
     <tr><td><code>data.snapshot_id</code></td><td>The id of the saved snapshot. It is part of every ref.</td></tr>
     <tr><td><code>data.ref_count</code></td><td>The number of refs the snapshot holds. After a <code>--root</code> drill it counts the whole snapshot, not only the drilled region.</td></tr>
     <tr><td><code>data.complete</code></td><td>Present on every snapshot. <code>false</code> means the observation ran out of budget. See <a href="/desktop/skeleton-and-drill-down#partial-observations">Partial observations</a>.</td></tr>
     <tr><td><code>data.truncated</code>, <code>data.nodes_observed</code></td><td>Present only when <code>complete</code> is <code>false</code>.</td></tr>
+    <tr><td><code>data.identity_unproven</code></td><td>Present and <code>true</code> only when the snapshot needed one whole read of the window to prove its refs and that read failed or was cut short. The tree is still the one presented, but on Windows and Linux, and on macOS for an element with no address, its refs fail with <code>identity_not_unique</code>. Retake the snapshot with a larger <code>--timeout-ms</code>.</td></tr>
     <tr><td><code>data.tree</code></td><td>The root node. Every node nests its <code>children</code>.</td></tr>
   </tbody>
 </table>
@@ -76,7 +77,7 @@ A node always carries `role` and, when they exist, `ref_id`, `name`, `value`, `d
 
 `children_count` and `subtree_truncated` mark where the tree was cut; [Skeleton and drill-down](/desktop/skeleton-and-drill-down) explains both. Three flags shrink the tree, and the [commands reference](/desktop/commands/observation#snapshot) lists every flag:
 
-- `-i` (`--interactive-only`) drops leaves that have no ref. It keeps nodes that lead to refs and nodes marked with `children_count`.
+- `-i` (`--interactive-only`) drops leaves that have no ref. It keeps nodes that lead to refs and nodes marked with `children_count`. Static text has no ref, so a row's label is dropped: to see which row a repeated button belongs to, drill that row's container with `--root` and leave out `-i`.
 - `--compact` collapses a single-child wrapper that has no name, value, description, id, state, or action.
 - `--max-depth` limits depth. The default is 10 and the maximum is 50.
 
@@ -103,7 +104,7 @@ Every command accepts only this qualified form. A bare `@e6` fails with `INVALID
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": false,
   "command": "click",
   "error": {
@@ -138,11 +139,11 @@ Each ref maps to a `RefEntry`: the evidence needed to find the same element agai
   </thead>
   <tbody>
     <tr><td>Process</td><td><code>pid</code>, <code>process_instance</code></td><td>Reject a ref whose process exited or whose pid was reused.</td></tr>
-    <tr><td>Identity</td><td><code>role</code>, <code>name</code>, <code>value</code>, <code>description</code>, <code>native_id</code></td><td>Match the live element. A control's <code>value</code> is never identity for roles whose value changes while you use them, such as <code>textfield</code>, <code>checkbox</code>, and <code>slider</code>.</td></tr>
-    <tr><td>Geometry</td><td><code>bounds</code>, <code>bounds_hash</code>, <code>bounds_space</code></td><td>Tell apart candidates that match equally. For an element with no other identity, a unique matching rectangle can identify it.</td></tr>
+    <tr><td>Identity</td><td><code>retained_object</code>, <code>role</code>, <code>name</code>, <code>value</code>, <code>description</code>, <code>native_id</code>, <code>unique_at_capture</code></td><td>Re-identify the element. <code>retained_object</code> is the element's own accessibility address, recorded on macOS. <code>unique_at_capture</code> records whether the entry was the only element in the window its snapshot captured with this role and these stable fields. A skeleton, depth-limited or drilled capture counts against that whole window, so a shallow presentation proves the same thing a full one does. A control's <code>value</code> is never identity for roles whose value changes while you use them, such as <code>textfield</code>, <code>checkbox</code>, and <code>slider</code>.</td></tr>
+    <tr><td>Geometry</td><td><code>bounds</code>, <code>bounds_hash</code>, <code>bounds_space</code></td><td>Not identity. <code>get --property bounds</code> falls back to them when the live read is unavailable; re-identification never compares them.</td></tr>
     <tr><td>Capabilities</td><td><code>states</code>, <code>available_actions</code></td><td>What the element offered at snapshot time.</td></tr>
     <tr><td>Source</td><td><code>source_app</code>, <code>source_window_id</code>, <code>source_window_title</code>, <code>source_window_bounds_hash</code>, <code>source_surface</code></td><td>Tie the ref to its window and surface.</td></tr>
-    <tr><td>Scope</td><td><code>path</code>, <code>root_ref</code>, <code>path_is_absolute</code></td><td>The element's position as child indexes, and which drill-down created the ref.</td></tr>
+    <tr><td>Scope</td><td><code>path</code>, <code>root_ref</code>, <code>path_is_absolute</code></td><td>The element's child-index position at capture, and which drill-down created the ref.</td></tr>
   </tbody>
 </table>
 
@@ -150,24 +151,27 @@ Each ref maps to a `RefEntry`: the evidence needed to find the same element agai
 
 A command never reuses a live handle from the snapshot. Every command that takes a ref, including `click`, `get`, `is`, `snapshot --root`, and `find --root`, re-identifies the element from its stored evidence first.
 
-<Diagram name="ref-resolution" title="How a ref resolves, and when it goes stale" aspectRatio="720 / 460" />
+<Diagram name="ref-resolution" title="How a ref resolves, and when it goes stale" aspectRatio="720 / 650" />
 
 1. The command parses `@s26u7pv9qta5g4:e6` into the snapshot id and the key `@e6`. A bare or malformed ref fails with `INVALID_ARGS`.
 2. `RefStore` loads `snapshots/s26u7pv9qta5g4/refmap.json` from the selected session's namespace. A missing snapshot fails with `SNAPSHOT_NOT_FOUND`.
 3. The ref map looks up `@e6` and returns its `RefEntry`. A missing key fails with `STALE_REF`.
-4. The platform adapter resolves the entry strictly against the live UI: it checks the process and the source window, then searches the window's live tree for elements with the stored role and stable identity.
-5. Exactly one match: the command acts on it or reads it. No match: `STALE_REF`. Several matches that nothing separates: `AMBIGUOUS_TARGET`.
-6. After `STALE_REF` or `AMBIGUOUS_TARGET`, take a fresh observation and use the new ref.
+4. If the entry carries the element's own address, `resolve_element_strict` turns it back into that exact element. If the element is alive and its process, role and recorded id still match, the command acts on it. Otherwise the ref is `STALE_REF` with `details.kind: retained_object_stale`. No search runs, and the ref never lands on a look-alike.
+5. If the entry has no address, `unique_at_capture` decides. A ref that was not unique at capture fails with `AMBIGUOUS_TARGET`, `details.kind: identity_not_unique`, before any live read.
+6. A ref that was unique is counted again over the live window by role, native id, name and description. The count covers the whole window, which is the scope the capture proved the ref unique in. Exactly one match: the command acts on it. None: `STALE_REF`, `details.kind: saved_ref_absent`. Two or more: `AMBIGUOUS_TARGET`, `details.kind: saved_ref_ambiguous`. A field the live read could not answer leaves the count unproven, which returns `TIMEOUT` with `details.kind: resolution_identity_unknown` instead of a match.
+7. After `STALE_REF` or `AMBIGUOUS_TARGET`, take a fresh observation and use the new ref.
 
-The stored position is a hint for where to look, and the identity check decides. Identifier and stable text come first. Geometry identifies an element only when the ref has no identifier and no stable text, and only on a unique rectangle. When several live elements match, the stored bounds can pick one of them; if they cannot, the answer is `AMBIGUOUS_TARGET`.
+On macOS a ref carries the element's own address, so identical twins each keep their own ref. When the address could not be taken, macOS follows the rule below. Windows and Linux refs carry no address, so a ref that was not the only element matching its role and stable fields when it was captured is refused.
+
+The comparison is the identity fields and nothing else: role, native id, name, and description. Control values are volatile and never count. Bounds never count either, so a stored rectangle or a stored path cannot pick between two candidates. A ref that fails these checks is refused rather than guessed at.
 
 <table>
   <thead>
     <tr><th>Error</th><th>Meaning</th><th>What to do</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>STALE_REF</code></td><td>The key is not in the snapshot's ref map, or no live element answers to the stored evidence. The UI changed, the window closed, or a re-drill replaced the ref.</td><td>Take a fresh snapshot, or re-drill the region, and use the new ref. Nothing was sent to the app.</td></tr>
-    <tr><td><code>AMBIGUOUS_TARGET</code></td><td>Several live elements match the stored evidence, and the stored bounds cannot separate them. The same code reports several windows for one <code>--app</code>.</td><td>Narrow the target with <code>find --role --name --exact</code> or <code>--root</code>, then use the new ref.</td></tr>
+    <tr><td><code>STALE_REF</code></td><td>The key is not in the snapshot's ref map, no live element matches the stored identity (<code>details.kind: saved_ref_absent</code>), or the element the ref names is gone (<code>retained_object_stale</code>). The UI changed, the window closed, or a re-drill replaced the ref.</td><td>Take a fresh snapshot, or re-drill the region, and use the new ref. Nothing was sent to the app.</td></tr>
+    <tr><td><code>AMBIGUOUS_TARGET</code></td><td>Two live elements match the stored identity (<code>saved_ref_ambiguous</code>), the ref was not proven unique when it was captured (<code>identity_not_unique</code>), or several windows matched one <code>--app</code>.</td><td>For several windows, name the window. A ref that was not proven unique came from identical twins or from a window that could not be read whole within the snapshot timeout; only the second is fixed by a new snapshot, with a larger <code>--timeout-ms</code>. Off macOS, identical twins cannot be picked by ref at all and every snapshot refuses them again: only an explicit coordinate click, <code>agent-desktop --headed mouse-click --xy X,Y</code>, can choose one. It takes the foreground and is unavailable on a Linux Wayland session.</td></tr>
     <tr><td><code>SNAPSHOT_NOT_FOUND</code></td><td>No saved snapshot has that id: it was pruned, it belongs to another <a href="/desktop/sessions">session</a>, or the state root differs.</td><td>Take a new snapshot under the same <code>--session</code> and state root as the command that uses it.</td></tr>
   </tbody>
 </table>

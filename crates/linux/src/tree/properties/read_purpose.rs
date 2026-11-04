@@ -3,6 +3,9 @@
 pub(crate) enum ReadPurpose {
     Snapshot,
     Sampling,
+    /// A whole-window read that only counts a saved ref's matches: identity
+    /// and children, without extents or actions.
+    Count,
     Identity,
     Resolve,
     Element,
@@ -20,7 +23,12 @@ impl ReadPurpose {
     pub(in crate::tree) fn identity(self) -> bool {
         matches!(
             self,
-            Self::Snapshot | Self::Sampling | Self::Identity | Self::Resolve | Self::Element
+            Self::Snapshot
+                | Self::Sampling
+                | Self::Count
+                | Self::Identity
+                | Self::Resolve
+                | Self::Element
         )
     }
 
@@ -33,7 +41,7 @@ impl ReadPurpose {
     }
 
     pub(in crate::tree) fn bounds(self) -> bool {
-        (self.identity() && self != Self::Sampling)
+        (self.identity() && !matches!(self, Self::Sampling | Self::Count))
             || matches!(self, Self::State | Self::Bounds | Self::Frame)
     }
 
@@ -49,6 +57,7 @@ impl ReadPurpose {
             self,
             Self::Snapshot
                 | Self::Sampling
+                | Self::Count
                 | Self::Structure
                 | Self::Shape
                 | Self::Gate

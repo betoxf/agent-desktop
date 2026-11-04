@@ -13,12 +13,13 @@ use crate::tree::observe::node_evidence::read_evidence;
 use crate::tree::placement::popup_position::{PopupPosition, popup_position_via};
 use crate::tree::properties::liveness::Liveness;
 use crate::tree::properties::read_purpose::ReadPurpose;
+use crate::tree::resolve::Source;
 use crate::tree::resolve::path_descent::Levels;
+use crate::tree::resolve::resolve_anchor::resolve_anchor;
 use crate::tree::resolve::resolve_errors::{ambiguous, settle_gone, stopped_app};
 use crate::tree::resolve::resolve_gate::stored_window;
 use crate::tree::resolve::resolve_search::evaluate;
 use crate::tree::resolve::searched::Searched;
-use crate::tree::resolve::{Source, resolve};
 use crate::tree::walk::level::Level;
 use crate::tree::walk::walker::walk_tree;
 use crate::tree::{AtspiElement, WalkLimits};
@@ -69,7 +70,7 @@ impl Source for MenuSource<'_> {
 
     fn evidence(&mut self, element: &AtspiElement) -> Result<LocatorEvidence, AdapterError> {
         let connection = &self.connection;
-        let mut read = within(
+        let read = within(
             self.deadline,
             read_evidence(
                 connection,
@@ -77,10 +78,6 @@ impl Source for MenuSource<'_> {
                 crate::tree::properties::read_purpose::ReadPurpose::Identity,
             ),
         )?;
-        read.evidence.identifiers = read
-            .evidence
-            .identifiers
-            .with_retained_object(element.object_identity());
         match read.liveness {
             Liveness::TimedOut => Err(unanswered()),
             _ => Ok(read.evidence),
@@ -94,6 +91,34 @@ impl Source for MenuSource<'_> {
 
     fn stopped_app(&mut self, pid: u32) -> Option<String> {
         stopped_app(pid)
+    }
+}
+
+/// Validates the popup binding carried by the matching node in core's shared
+/// observation. A unique text match in another popup cannot authorize a rooted
+/// find or drill, even though neither operation needs a native handle.
+pub(crate) fn validate_observed_context(
+    entry: &RefEntry,
+    observed_token: Option<&str>,
+) -> Result<(), AdapterError> {
+    if !is_menu_entry(entry) {
+        return Ok(());
+    }
+    let captured = entry
+        .identity
+        .retained_object
+        .as_deref()
+        .and_then(MenuContext::decode)
+        .filter(|(_, object)| !object.is_empty());
+    let observed = observed_token
+        .and_then(MenuContext::decode)
+        .filter(|(_, object)| !object.is_empty());
+    match (captured, observed) {
+        (Some((captured, _)), Some((observed, _))) if captured.matches(&observed) => Ok(()),
+        (captured, observed) => Err(context_changed(
+            captured.is_some_and(|(context, _)| context.is_complete())
+                && observed.is_some_and(|(context, _)| context.is_complete()),
+        )),
     }
 }
 
@@ -138,7 +163,7 @@ pub(crate) fn resolve_menu(
             levels: None,
             deadline,
         };
-        resolve(&mut source, scoped_entry, deadline)
+        resolve_anchor(&mut source, scoped_entry, deadline)
     })
     .and_then(|element| open_handle(element, |element| position_of(bus, element, deadline)))
 }

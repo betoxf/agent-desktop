@@ -15,7 +15,7 @@ use crate::tree::properties::read_purpose::ReadPurpose;
 use crate::tree::vocabulary::label_read::read_label_if_needed;
 use crate::tree::{AtspiElement, Expansion, ObservedRead, RawNode, WalkLimits};
 
-const NODES_IN_FLIGHT: usize = 8;
+const NODES_IN_FLIGHT: usize = 32;
 const PID_LOOKUPS_IN_FLIGHT: usize = 64;
 
 /// Stands in for the process id of a bus name whose lookup failed. Process
@@ -113,8 +113,8 @@ impl<'a> LevelReader<'a> {
         self
     }
 
-    /// Reads one level of the tree with at most `NODES_IN_FLIGHT` nodes (about
-    /// sixty calls) outstanding at a time. Below the root a node that is gone,
+    /// Reads one level of the tree with at most `NODES_IN_FLIGHT` nodes
+    /// outstanding at a time, so a wide level costs one round of calls. Below the root a node that is gone,
     /// or whose process id could not be found, is kept as an unreadable node
     /// marked gone. Transport failures abort the walk at every depth.
     pub(in crate::tree) fn expand(

@@ -103,3 +103,34 @@ fn an_interrupted_narrow_sample_returns_the_full_payload_as_incomplete() {
     assert!(!complete);
     assert_eq!(root.identity.name.as_deref(), Some("b"));
 }
+
+#[test]
+fn an_identity_only_read_skips_extents_actions_and_placement() {
+    let purposes = std::cell::RefCell::new(Vec::new());
+    let mut walker = |_: &AtspiElement, _: &WalkLimits, _, purpose| {
+        purposes.borrow_mut().push(purpose);
+        walk_of(2, true)
+    };
+    let window = window();
+    let mut identity_only = request(5000);
+    identity_only.observation_mode.identity_only = true;
+    let result = observe_with(
+        ObservationRoot::Window(&window),
+        &identity_only,
+        SettleHost {
+            walker: &mut walker,
+            is_web_process: &|_| Ok(true),
+            stopped: &|_| false,
+            pause: &mut |_| {},
+            place: &mut |_| panic!("an identity-only read must not place"),
+        },
+    )
+    .unwrap();
+    assert!(result.is_complete());
+    let purposes = purposes.borrow();
+    assert!(!purposes.is_empty());
+    assert!(purposes.iter().all(|purpose| purpose.identity()
+        && purpose.children()
+        && !purpose.bounds()
+        && !purpose.actions()));
+}

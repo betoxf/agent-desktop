@@ -8,7 +8,7 @@ A failed command prints an envelope with `ok: false` and exits `1` (or `2` for a
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": false,
   "command": "click",
   "error": {
@@ -55,9 +55,9 @@ A failed command prints an envelope with `ok: false` and exits `1` (or `2` for a
     <tr><td><code>ACTION_FAILED</code></td><td>The action was rejected or blocked, or its observed result contradicted the request.</td><td>Read <code>details</code> and <code>disposition.retry</code>. It never carries <code>recovery</code>.</td></tr>
     <tr><td><code>ACTION_NOT_SUPPORTED</code></td><td>The target, or this platform for this input, does not expose the requested action.</td><td>Use a different command or element. Repeating it fails the same way.</td></tr>
     <tr><td><code>STALE_REF</code></td><td>The ref no longer matches a live element.</td><td>Take a fresh snapshot and use the new ref. See <a href="/desktop/snapshots-and-refs">Snapshots and refs</a>.</td></tr>
-    <tr><td><code>AMBIGUOUS_TARGET</code></td><td>Several live elements, windows, or app instances match, and the command refuses to guess.</td><td>Narrow the target with <code>find</code>, <code>--root</code>, or <code>--window-id</code>, then use the new ref. It never carries <code>recovery</code>.</td></tr>
+    <tr><td><code>AMBIGUOUS_TARGET</code></td><td>Several live elements, windows, or app instances match, or the ref was not unique when it was captured, and the command refuses to guess.</td><td>Take a fresh snapshot. When the matches are different elements, narrow the target with <code>find</code>, <code>--root</code>, or <code>--window-id</code>; off macOS, identical twins have no ref path. It never carries <code>recovery</code>.</td></tr>
     <tr><td><code>WINDOW_NOT_FOUND</code></td><td>The requested window does not exist, including a <code>--window-id</code> that matches no window or a closed shell surface.</td><td>Run <code>list-windows --app &lt;name&gt;</code> and use an id it reports.</td></tr>
-    <tr><td><code>PLATFORM_NOT_SUPPORTED</code></td><td>This platform's adapter does not implement the method or surface kind.</td><td>Use another approach. The platform pages list what each OS supports.</td></tr>
+    <tr><td><code>PLATFORM_NOT_SUPPORTED</code></td><td>This platform's adapter does not implement the method. A surface kind this OS does not have is <code>INVALID_ARGS</code>.</td><td>Use another approach. The platform pages list what each OS supports.</td></tr>
     <tr><td><code>TIMEOUT</code></td><td>A wait expired, the target never became actionable, or a read stayed incomplete until the deadline.</td><td>Read <code>details.kind</code>. Retry only when <code>disposition.retry</code> is <code>safe</code>.</td></tr>
     <tr><td><code>INVALID_ARGS</code></td><td>An argument is invalid. Also returned for a bare <code>@eN</code> ref and an ended session.</td><td>Fix the input. Repeating the same arguments fails the same way.</td></tr>
     <tr><td><code>NOTIFICATION_NOT_FOUND</code></td><td>The notification index or identity no longer matches.</td><td>Run <code>list-notifications</code> again.</td></tr>

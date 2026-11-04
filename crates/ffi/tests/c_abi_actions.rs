@@ -81,6 +81,35 @@ fn exact_ref_action_without_process_generation_is_rejected() {
 }
 
 #[test]
+fn a_well_formed_exact_ref_action_is_refused_without_acting() {
+    with_adapter(|adapter| unsafe {
+        let role = CString::new("button").unwrap();
+        let name = CString::new("Save").unwrap();
+        let process_instance = CString::new("generation-1").unwrap();
+        let mut entry = default_exact_ref_entry();
+        entry.process_instance = process_instance.as_ptr();
+        entry.entry.process.pid = 1;
+        entry.entry.identity.role = role.as_ptr();
+        entry.entry.identity.name = name.as_ptr();
+        let action = default_action();
+        let mut out: AdActionResult = std::mem::zeroed();
+
+        let rc = ad_execute_ref_action_exact_with_policy(
+            adapter,
+            &entry,
+            &action,
+            AdPolicyKind::Headless as i32,
+            &mut out,
+        );
+
+        let message = CStr::from_ptr(ad_last_error_message()).to_string_lossy();
+        assert_eq!(rc, AdResult::ErrActionNotSupported, "message={message}");
+        assert!(out.steps.is_null());
+        assert!(message.contains("no capture proof"), "message={message}");
+    });
+}
+
+#[test]
 fn execute_action_policy_rejects_null_adapter_on_worker_thread() {
     let rc = std::thread::spawn(|| unsafe {
         let action = default_action();

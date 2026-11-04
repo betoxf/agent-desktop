@@ -89,29 +89,31 @@ fn remote_panel() -> Fake {
     fake
 }
 
+/// Identity is the element's role and stable fields, so the changed name is
+/// what refuses the replacement; another owner at the same path alone does not.
 #[test]
-fn a_retained_ref_refuses_the_same_path_and_rectangle_on_another_owner() {
+fn a_retained_ref_refuses_a_differently_named_replacement_on_another_owner() {
     let mut fake = Fake::new();
     fake.add(
         FRAME_PATH,
         "/field",
-        node(crate::tree::vocabulary::role_numbers::ENTRY, "", 100, 24),
+        node(
+            crate::tree::vocabulary::role_numbers::ENTRY,
+            "Field",
+            100,
+            24,
+        ),
     );
     let mut entry = fake.entry_of("/field", true);
-    let original = resolve(&mut fake, &entry, deadline()).expect("original field");
-    entry.identity.retained_object = fake
-        .evidence(&original)
-        .unwrap()
-        .identifiers
-        .retained_object()
-        .map(str::to_owned);
-    assert!(entry.identity.retained_object.is_some());
+    entry.identity.retained_object = Some(":1.2/field".to_owned());
     assert_eq!(
         resolve(&mut fake, &entry, deadline()).unwrap().bus_name(),
         BUS
     );
     fake.pids.insert(":1.99".to_owned(), 99);
-    fake.nodes.get_mut("/field").unwrap().bus = ":1.99".to_owned();
+    let other = fake.nodes.get_mut("/field").unwrap();
+    other.bus = ":1.99".to_owned();
+    other.read.node.properties.name = Field::Present("Other".to_owned());
     let error = resolve(&mut fake, &entry, deadline()).expect_err("replacement owner");
     assert_eq!(error.code, ErrorCode::StaleRef);
 }

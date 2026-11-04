@@ -1,4 +1,4 @@
-note "Default CLI retains native identity across collection changes"
+note "Ref behavior across collection changes"
 MODE_FLAG=""
 AGENT_DESKTOP_FIXTURE_REF_CHURN=1 AGENT_DESKTOP_FIXTURE_NO_ACTIVATE=1 \
     "$fixture_app/Contents/MacOS/AgentDeskFixture" >/dev/null 2>&1 &
@@ -34,24 +34,6 @@ stable_seen="$(wait_target "$stable" value 3000 --value stable-ok 2>/dev/null)"
 assert "unchanged editor remains editable through its ref" \
     "$([ "$(json_field "$stable_write" ok)" = "True" ] && [ "$(json_field "$stable_seen" data.found)" = "True" ] && echo 1 || echo 0)" \
     "ok=$(json_field "$stable_write" ok) found=$(json_field "$stable_seen" data.found)"
-pgrep -fx "$raw_bin" | while read -r host_pid; do
-    kill "$host_pid" 2>/dev/null || true
-done
-for _ in $(seq 1 100); do
-    [ -z "$(pgrep -fx "$raw_bin" 2>/dev/null)" ] && break
-    sleep 0.02
-done
-assert "task-owned command hosts stopped" \
-    "$([ -z "$(pgrep -fx "$raw_bin" 2>/dev/null)" ] && echo 1 || echo 0)" ""
-restarted_read="$("$bin" get "$(target_ref "$stable")" 2>/dev/null)"
-assert "host restart invalidates retained refs" \
-    "$([ "$(json_field "$restarted_read" error.code)" = "STALE_REF" ] && echo 1 || echo 0)" \
-    "code=$(json_field "$restarted_read" error.code)"
-require_target_by_id fresh_stable textfield stable-editor
-fresh_read="$("$bin" get "$(target_ref "$fresh_stable")" 2>/dev/null)"
-assert "fresh snapshot after host restart restores access" \
-    "$([ "$(json_field "$fresh_read" ok)" = "True" ] && echo 1 || echo 0)" \
-    "ok=$(json_field "$fresh_read" ok)"
 kill "$churn_pid" 2>/dev/null
 wait "$churn_pid" 2>/dev/null
 fixture_owned=0

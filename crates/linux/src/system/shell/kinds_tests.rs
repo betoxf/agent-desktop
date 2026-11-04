@@ -26,6 +26,6 @@ fn taskbar_open_is_refused_before_any_bus_access() {
         &lease,
     )
     .expect_err("the shell does not present a taskbar");
-    assert_eq!(error.code, ErrorCode::PlatformNotSupported);
+    assert_eq!(error.code, ErrorCode::InvalidArgs);
     assert!(error.message.contains("no stock shell shows a dock"));
 }

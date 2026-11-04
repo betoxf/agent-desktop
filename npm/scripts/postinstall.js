@@ -185,6 +185,17 @@ function isNodeWrapper(path) {
 
 const LINKED_NOTICE = 'Native binary linked: each call runs without the Node launcher.';
 
+/** Runs the installed binary once on macOS so it stops command hosts that earlier versions left running. */
+function stopLeftoverHosts(binaryPath) {
+  if (platform() !== 'darwin') return;
+  try {
+    execFileSync(binaryPath, ['version'], { stdio: 'ignore', timeout: 5000 });
+  } catch (err) {
+    log(`Could not stop command hosts left by an earlier version: ${err.message}`);
+    log('Run `agent-desktop version` once to stop them.');
+  }
+}
+
 function linkBinEntry(directory, binaryName, osPlatform = platform()) {
   if (!isInstalledPackage(directory)) return false;
   if (osPlatform === 'win32') {
@@ -304,6 +315,7 @@ function main() {
       installExecutable(customPath, binaryPath);
       log(`Using binary from AGENT_DESKTOP_BINARY_PATH: ${customPath}`);
       linkBinEntry(binDir, binaryName);
+      stopLeftoverHosts(binaryPath);
       promptSkillInstall();
     } catch (err) {
       log(`Failed to install from AGENT_DESKTOP_BINARY_PATH: ${err.message}`);
@@ -331,6 +343,7 @@ function main() {
         : `Native executable ready: ${binaryName}`,
     );
     linkBinEntry(binDir, binaryName);
+    stopLeftoverHosts(binaryPath);
     promptSkillInstall();
     return;
   }
@@ -373,6 +386,7 @@ function main() {
   }
 
   linkBinEntry(binDir, binaryName);
+  stopLeftoverHosts(binaryPath);
 
   promptSkillInstall();
 }

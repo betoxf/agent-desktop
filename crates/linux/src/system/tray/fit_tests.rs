@@ -68,6 +68,7 @@ fn projected() -> AccessibilityNode {
         ObservationSource::Window {
             window,
             surface: SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         Default::default(),
         true,

@@ -4,7 +4,7 @@ navTitle: API
 description: Every function, struct, and enum in agent_desktop.h, grouped by area, with exact C signatures.
 ---
 
-Signatures on this page are extracted from `crates/ffi/include/agent_desktop.h` (ABI major 6). Every `AdResult` function returns `AD_RESULT_OK` (0) or a negative code; read the details with the [last-error accessors](/desktop/ffi/ownership-and-threading#errors). Which call frees which pointer is in [Ownership](/desktop/ffi/ownership-and-threading#ownership).
+Signatures on this page are extracted from `crates/ffi/include/agent_desktop.h`. Every `AdResult` function returns `AD_RESULT_OK` (0) or a negative code; read the details with the [last-error accessors](/desktop/ffi/ownership-and-threading#errors). Which call frees which pointer is in [Ownership](/desktop/ffi/ownership-and-threading#ownership).
 
 ## Enums
 
@@ -118,6 +118,8 @@ AdResult ad_trace_export(const struct AdAdapter *adapter,
 ## Actions, refs, and native handles
 
 `ad_execute_by_ref` is the primary action entrypoint. `ad_execute_action` and `ad_execute_action_with_policy` act on a native handle and skip strict re-identification and the actionability checks.
+
+The two exact-entry calls, `ad_execute_ref_action_exact_with_policy` and `ad_resolve_element_exact`, fail closed with `AD_RESULT_ERR_ACTION_NOT_SUPPORTED` on every platform. An `AdExactRefEntry` carries no retained element token and no capture proof, so the element it names cannot be re-identified. Act through a snapshot ref with `ad_execute_by_ref`, and get a native handle with `ad_find_exact`.
 
 ```c
 typedef struct AdNativeHandle {
@@ -274,14 +276,17 @@ AdResult ad_execute_action_with_policy(const struct AdAdapter *adapter,
                                        int32_t policy,
                                        struct AdActionResult *out);
 
-// Runs the full ref-action pipeline from an exact ref entry.
+// Always fails with ACTION_NOT_SUPPORTED: an exact ref entry carries no
+// retained element token and no capture proof, so it cannot be
+// re-identified. Act through a snapshot ref with ad_execute_by_ref.
 AdResult ad_execute_ref_action_exact_with_policy(const struct AdAdapter *adapter,
                                                  const struct AdExactRefEntry *entry,
                                                  const struct AdAction *action,
                                                  int32_t policy,
                                                  struct AdActionResult *out);
 
-// Strictly resolves an exact ref entry to a native handle.
+// Always fails with ACTION_NOT_SUPPORTED for the same reason. To get a native
+// handle, use ad_find_exact.
 AdResult ad_resolve_element_exact(const struct AdAdapter *adapter,
                                   const struct AdExactRefEntry *entry,
                                   struct AdNativeHandle *out);
@@ -342,6 +347,7 @@ typedef struct AdFindQuery {
 
 ```c
 // Finds and strictly resolves one element in an exact window; duplicates need a first, last, or nth selection.
+// The handle is published only when the landed element still matches the selected entry's recorded identity.
 AdResult ad_find_exact(const struct AdAdapter *adapter,
                        const struct AdExactWindowInfo *win,
                        const struct AdFindQuery *query,

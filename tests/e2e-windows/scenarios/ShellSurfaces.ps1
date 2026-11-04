@@ -103,7 +103,7 @@ function Invoke-ShellActionCenterOpenLeg {
                 }
                 $open = Invoke-ShellActionCenterOpenWithRetry -Surface 'action-center'
                 if (-not $open.Opened) {
-                    if ($open.ErrorCode -eq 'PLATFORM_NOT_SUPPORTED') {
+                    if ($open.ErrorCode -eq 'INVALID_ARGS') {
                         $script:ShellSurfacesSkippedLeg = $leg
                         Add-Skip -Leg $leg -Token 'shell-surface-absent' -Reason "open-system-surface refused with $($open.ErrorCode); this runner does not expose the surface"
                         return
@@ -150,7 +150,7 @@ function Invoke-ShellActionCenterCloseLeg {
                 if (-not $pre.Opened) {
                     $open = Invoke-ShellActionCenterOpenWithRetry -Surface 'action-center'
                     if (-not $open.Opened) {
-                        if ($open.ErrorCode -eq 'PLATFORM_NOT_SUPPORTED') {
+                        if ($open.ErrorCode -eq 'INVALID_ARGS') {
                             $script:ShellSurfacesSkippedLeg = $leg
                             Add-Skip -Leg $leg -Token 'shell-surface-absent' -Reason "open-system-surface refused with $($open.ErrorCode); this runner does not expose the surface"
                             return

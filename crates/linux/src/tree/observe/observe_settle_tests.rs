@@ -322,3 +322,31 @@ fn web_readiness_depends_on_document_evidence_not_tree_size() {
     let large_shell = observe(true, false, 1_000, &counts(&[80, 80, 80]));
     assert!(!large_shell.complete);
 }
+
+#[test]
+fn an_identity_only_read_of_a_web_window_walks_once_without_waiting() {
+    let calls = Cell::new(0usize);
+    let paused = Cell::new(false);
+    let mut walker = |_: &AtspiElement, _: &WalkLimits, _, _| {
+        calls.set(calls.get() + 1);
+        walk_of(calls.get() + 1, true)
+    };
+    let mut pause = |_: Duration| paused.set(true);
+    let window = window();
+    let mut identity_only = request(5000);
+    identity_only.observation_mode.identity_only = true;
+    let tree = observe_with(
+        ObservationRoot::Window(&window),
+        &identity_only,
+        SettleHost {
+            walker: &mut walker,
+            place: &mut |_| Ok(()),
+            is_web_process: &|_| panic!("an identity-only read does not ask what the process is"),
+            stopped: &|_| false,
+            pause: &mut pause,
+        },
+    )
+    .expect("observes");
+    assert_eq!((calls.get(), paused.get()), (1, false));
+    assert!(tree.is_complete());
+}

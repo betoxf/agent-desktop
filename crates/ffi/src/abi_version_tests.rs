@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn abi_major_covers_the_ref_geometry_coordinate_frame() {
-    assert_eq!(AD_ABI_VERSION_MAJOR, 6);
+fn abi_major_covers_the_exact_entry_refusal() {
+    assert_eq!(AD_ABI_VERSION_MAJOR, 7);
 }
 
 #[test]

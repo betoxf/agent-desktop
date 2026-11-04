@@ -210,6 +210,7 @@ mod tests {
                     value: None,
                     description: None,
                     native_id: None,
+                    unique_at_capture: false,
                 },
                 geometry: agent_desktop_core::RefGeometry {
                     bounds_space: None,
@@ -226,6 +227,7 @@ mod tests {
                     source_window_title: None,
                     source_window_bounds_hash: None,
                     source_surface: SnapshotSurface::Window,
+                    renderer_accessibility_forced: false,
                 },
                 scope: agent_desktop_core::RefScope {
                     root_ref: None,

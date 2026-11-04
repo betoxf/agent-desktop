@@ -129,7 +129,7 @@ pub(crate) enum Commands {
     #[command(about = "List accessibility surfaces for an app (window, menu, sheet ...)")]
     ListSurfaces(ListSurfacesArgs),
     #[command(
-        about = "Open a shell surface (start-menu, taskbar, action-center ...) and return the window it presents"
+        about = "Open a shell surface (start-menu, taskbar, dock, menu-bar-extras ...) and return the window it presents, if any"
     )]
     OpenSystemSurface(OpenSystemSurfaceArgs),
     #[command(about = "List notifications from Notification Center")]
@@ -257,13 +257,6 @@ impl Commands {
 
     pub(crate) fn supports_post_action_wait(&self) -> bool {
         self.metadata().post_action_wait
-    }
-
-    #[cfg(target_os = "macos")]
-    /// Permission guidance needs the caller; session management crosses host namespaces.
-    pub(crate) fn needs_caller_process(&self) -> bool {
-        matches!(self, Self::Session(_) | Self::Batch(_))
-            || matches!(self, Self::Permissions(args) if args.guide)
     }
 
     pub(crate) fn is_mutating(&self) -> bool {

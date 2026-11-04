@@ -4,7 +4,7 @@ navTitle: Skeleton and drill-down
 description: Read a dense app in two passes. Take a shallow skeleton, drill into one region by ref, re-drill after a change, and scope searches the same way.
 ---
 
-A dense app, such as an Electron client or an IDE, can expose thousands of accessibility nodes. A full snapshot of it is slow, costs many tokens, and can run out of budget before it finishes. A skeleton snapshot reads only the top levels. You then drill into the one region you need with `snapshot --root`, so the cost follows the region you act on instead of the whole window.
+A dense app, such as an Electron client or an IDE, can expose thousands of accessibility nodes. A full snapshot of it is slow, costs many tokens, and can run out of budget before it finishes. A skeleton snapshot reads only the top levels. You then drill into the one region you need with `snapshot --root`, so the refs you read and act on cover that region instead of the whole window. Only macOS makes the drill read less of the window. Off macOS a drill re-identifies its root over a complete read of the window, as [Drill into a region](#drill-into-a-region) explains.
 
 ## The loop
 
@@ -17,6 +17,8 @@ A dense app, such as an Electron client or an IDE, can expose thousands of acces
 5. Verify with `wait` or `get` on a ref from the drill, or re-read the region with the same `snapshot --root`. If the action result lists a menu, sheet, or alert in `data.surfaces`, read that [surface](/desktop/surfaces) next.
 6. If another region matters, drill it. If the layout changed, or the root ref itself is `STALE_REF`, take a new skeleton.
 
+`-i` keeps only interactive nodes, so a row's static text is dropped. To tell which row a repeated button belongs to, drill that row's container with `--root` and leave out `-i`, then match the button to the label beside it.
+
 Two shortcuts skip the loop: a small app needs only `snapshot -i`, and a known target needs only `find`. See [When to skip the skeleton](#when-to-skip-the-skeleton).
 
 ## Take a skeleton
@@ -27,7 +29,7 @@ agent-desktop snapshot --app gnome-calculator --skeleton -i --compact
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "snapshot",
   "data": {
@@ -90,7 +92,7 @@ agent-desktop snapshot --root @s2txcl95uvubmn:e1 -i --compact
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "snapshot",
   "data": {
@@ -136,6 +138,8 @@ The tree above is trimmed to the display and two of the 31 buttons and fields th
 3. Reads the element's subtree to `--max-depth` (default 10). `--app` and `--window-id` are not used, because the ref already names its window, and `--skeleton` has no effect.
 4. Allocates refs for the subtree and writes them into the same snapshot, so `snapshot_id` does not change.
 
+Off macOS the drill re-identifies its root over a complete read of the window and counts its new refs against that same read, so a drill's refs resolve by exactly the rules the skeleton's do.
+
 The result's root is the drilled element, and `ref_count` is the whole snapshot's count: 2 skeleton refs plus 31 drill refs. New refs continue the snapshot's counter, which is why this drill starts at `e3`. The ref you drilled stays valid.
 
 ## Re-drill after a change
@@ -159,7 +163,7 @@ agent-desktop get @s2txcl95uvubmn:e11                  # inside the region: repl
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "get",
   "data": { "property": "role", "ref": "@s2txcl95uvubmn:e2", "value": "group" }
@@ -168,7 +172,7 @@ agent-desktop get @s2txcl95uvubmn:e11                  # inside the region: repl
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": false,
   "command": "get",
   "error": {
@@ -207,7 +211,7 @@ A drill is all or nothing. It replaces refs inside an existing snapshot, and a p
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": false,
   "command": "snapshot",
   "error": {
@@ -246,7 +250,7 @@ A `find` that returns matches saves its own new snapshot, and its refs are quali
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "find",
   "data": {
@@ -296,7 +300,7 @@ agent-desktop snapshot --app gtk3-widget-factory -i --compact --timeout-ms 50
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "snapshot",
   "data": {

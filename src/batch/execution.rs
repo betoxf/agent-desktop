@@ -100,40 +100,11 @@ pub(super) fn execute(
             .with_inherited_deadline(deadline)
             .with_event_baseline(current_baseline);
         let command = std::mem::replace(&mut commands[index].command, Commands::Version);
-        #[cfg(target_os = "macos")]
-        let forwarded = if !cfg!(test)
-            && !context.session_namespace_is_pinned()
-            && !command.needs_caller_process()
-        {
-            Some(crate::command_host::forward_batch_item(
-                &commands[index].source,
-                &item_context,
-                deadline,
-            ))
-        } else {
-            None
-        };
-        #[cfg(not(target_os = "macos"))]
-        let forwarded: Option<Result<Value, AppError>> = None;
-        let entry = match forwarded {
-            Some(Ok(mut entry)) => {
-                entry["index"] = json!(index);
-                entry
-            }
-            result => super::result_entry::completed_entry(
-                index,
-                &commands[index].name,
-                match result {
-                    Some(Err(error)) => Err(error),
-                    _ => crate::dispatch::dispatch(
-                        command,
-                        adapter,
-                        permission_report,
-                        &item_context,
-                    ),
-                },
-            ),
-        };
+        let entry = super::result_entry::completed_entry(
+            index,
+            &commands[index].name,
+            crate::dispatch::dispatch(command, adapter, permission_report, &item_context),
+        );
         let failed = entry["ok"] != true;
         let (entry, oversized) = super::result_entry::bounded_completed_entry(
             index,

@@ -151,6 +151,7 @@ impl Projector<'_> {
     ) -> ObservedSubtree {
         let mut evidence = self.evidence_of(&node.payload, node.in_web_document);
         visibility.append(&node.payload, &mut evidence);
+        let wrapper = crate::tree::walk::wrapper::classify(&node.payload).wrapper;
         let WalkedNode {
             payload,
             children,
@@ -177,6 +178,7 @@ impl Projector<'_> {
         }
         ObservedSubtree::new(evidence, children, !truncated, child_count)
             .with_source_child_index(source_index)
+            .with_wrapper(wrapper)
     }
 }
 

@@ -24,7 +24,7 @@ The grant belongs to the app that launched agent-desktop, not to the shell. A di
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "permissions",
   "data": {
@@ -56,7 +56,7 @@ Ref actions are headless by default. Under `--headed`, `click`, `right-click`, `
     <tr><td>Clipboard</td><td><code>clipboard-get</code>, <code>clipboard-set</code> (read back: <code>delivered_verified</code>), <code>clipboard-clear</code></td><td></td><td></td></tr>
     <tr><td>Wait</td><td>All modes. <code>wait --notification</code> sees only an already-open Notification Center</td><td></td><td></td></tr>
     <tr><td>Notifications</td><td><code>list-notifications</code> while Notification Center is open</td><td>Listing while it is closed, and every dismiss and action</td><td>Headless listing with the center closed: <code>POLICY_DENIED</code></td></tr>
-    <tr><td>Shell surfaces</td><td></td><td></td><td><code>open-system-surface</code>: <code>PLATFORM_NOT_SUPPORTED</code></td></tr>
+    <tr><td>Shell surfaces</td><td><code>open-system-surface</code> for <code>dock</code> and <code>menu-bar-extras</code>, returned at once because they are always on screen</td><td></td><td><code>start-menu</code>, <code>taskbar</code>, <code>system-tray</code>, <code>system-tray-overflow</code>, <code>action-center</code>: <code>INVALID_ARGS</code></td></tr>
     <tr><td>System</td><td><code>status</code>, <code>permissions</code>, <code>version</code>, <code>batch</code>, <code>skills</code>, <code>session</code>, <code>cursor-overlay</code>, <code>trace</code></td><td></td><td></td></tr>
   </tbody>
 </table>
@@ -65,11 +65,11 @@ Judge delivery by observation. AX return codes do not prove an effect: an app ca
 
 ## App naming
 
-`--app` takes the display name `list-apps` prints, such as `"System Settings"` or `"TextEdit"`. `launch` also accepts a bundle ID such as `com.apple.TextEdit`. Window ids such as `w-4521` stay valid for the life of the window; find them with `list-windows`.
+`--app` takes the display name `list-apps` prints, such as `"System Settings"` or `"TextEdit"`. When no running app has that display name, it also matches a bundle ID or an executable name, such as `ControlCenter` for Control Center. `launch` also accepts a bundle ID such as `com.apple.TextEdit`. Window ids such as `w-4521` stay valid for the life of the window; find them with `list-windows`.
 
 ## Surfaces
 
-`supported_surfaces` lists `window`, `focused`, `menu`, `menubar`, `sheet`, `popover`, and `alert`. Use `--surface menubar` for the File, Edit, and View menus and for menu bar status items. macOS has no shell surfaces; Notification Center is reached through the notification commands. See [Surfaces](/desktop/surfaces).
+`supported_surfaces` lists `window`, `focused`, `menu`, `menubar`, `sheet`, `popover`, `alert`, `dock`, and `menu-bar-extras`. Use `--surface menubar` for an app's File, Edit, and View menus. Use `--surface menu-bar-extras` for status items: without `--app` it reads the system items (Wi-Fi, Battery, Clock), and with `--app` it reads that app's own item. `--surface dock` reads the Dock. A background app with no window, such as the Control Center panel after you click its status item, is read through its process with `snapshot --app "Control Center"`; [Surfaces](/desktop/surfaces) has the rules. Notification Center is reached through the notification commands. See [Surfaces](/desktop/surfaces).
 
 ## Keys and notifications
 

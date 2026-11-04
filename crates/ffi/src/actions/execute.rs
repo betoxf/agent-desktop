@@ -1,7 +1,7 @@
 use crate::AdAdapter;
 use crate::actions::conversion::action_from_c;
+use crate::actions::exact_entry::{core_ref_entry_from_exact, exact_entry_unsupported};
 use crate::actions::result::action_result_to_c;
-use crate::commands::app_error_to_adapter;
 use crate::error::{self, AdResult};
 use crate::ffi_try::trap_panic;
 use crate::types::{AdAction, AdActionResult, AdExactRefEntry, AdNativeHandle, AdPolicyKind};
@@ -129,8 +129,11 @@ pub unsafe extern "C" fn ad_execute_action_with_policy(
     })
 }
 
-/// Executes a struct-based ref action with exact process-generation and typed
-/// native-id evidence.
+/// Validates a struct-based ref action and refuses it without acting. An exact
+/// entry carries no retained element token and no capture proof, so a
+/// well-formed call fails with `ACTION_NOT_SUPPORTED`
+/// (`exact_entry_unsupported`) and a malformed one with `INVALID_ARGS`;
+/// callers act through a snapshot ref with `ad_execute_by_ref` instead.
 ///
 /// # Safety
 ///
@@ -150,56 +153,20 @@ pub unsafe extern "C" fn ad_execute_ref_action_exact_with_policy(
         crate::pointer_guard::guard_non_null!(adapter, c"adapter is null");
         crate::pointer_guard::guard_non_null!(entry, c"entry is null");
         crate::pointer_guard::guard_non_null!(action, c"action is null");
-        let core_entry = match crate::actions::resolve::core_ref_entry_from_exact(&*entry) {
-            Ok(entry) => entry,
-            Err(error) => {
-                error::set_last_error(&error);
-                return error::last_error_code();
-            }
-        };
-        execute_core_ref_action(adapter, core_entry, &*action, policy, out)
-    })
-}
-
-unsafe fn execute_core_ref_action(
-    adapter: *const AdAdapter,
-    entry: agent_desktop_core::RefEntry,
-    action: &AdAction,
-    policy: i32,
-    out: *mut AdActionResult,
-) -> AdResult {
-    let core_action = match decode_action(action) {
-        Ok(action) => action,
-        Err(result) => return result,
-    };
-    let policy = match decode_policy(policy) {
-        Ok(policy) => policy,
-        Err(result) => return result,
-    };
-    let adapter_ref = crate::adapter::acquire_adapter!(adapter);
-    let request = action_request(policy, core_action);
-    let context = match adapter_ref.command_context() {
-        Ok(context) => context,
-        Err(error) => {
-            error::set_last_error(&app_error_to_adapter(error));
+        if let Err(error) = core_ref_entry_from_exact(&*entry) {
+            error::set_last_error(&error);
             return error::last_error_code();
         }
-    };
-    match agent_desktop_core::ref_action::execute_entry_with_context(
-        adapter_ref.inner.as_ref(),
-        &entry,
-        request,
-        &context,
-    ) {
-        Ok(result) => {
-            unsafe { *out = action_result_to_c(&result) };
-            AdResult::Ok
+        if let Err(result) = decode_action(&*action) {
+            return result;
         }
-        Err(error) => {
-            error::set_last_error(&error);
-            error::last_error_code()
+        if let Err(result) = decode_policy(policy) {
+            return result;
         }
-    }
+        let _live = crate::adapter::acquire_adapter!(adapter);
+        error::set_last_error(&exact_entry_unsupported());
+        error::last_error_code()
+    })
 }
 
 fn decode_action(action: &AdAction) -> Result<Action, AdResult> {

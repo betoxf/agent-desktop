@@ -16,9 +16,11 @@ const MAX_CONTAINMENT_DEPTH: usize = 8;
 
 /// Finds and strictly resolves one element within a generation-pinned window.
 /// `AdFindQuery.control.selection` must explicitly request first, last, or nth
-/// behavior when duplicate matches are acceptable. The returned native handle
-/// is adapter-bound and thread-affine; release it with `ad_free_handle` on the
-/// resolving thread.
+/// behavior when duplicate matches are acceptable. The handle is published only
+/// after the landed element is re-identified by the selected entry's full
+/// predicate, so a control that moved into the anchored path is refused rather
+/// than returned. The returned native handle is adapter-bound and thread-affine;
+/// release it with `ad_free_handle` on the resolving thread.
 ///
 /// # Safety
 /// All pointers must be valid and `out_handle` must be writable.
@@ -113,9 +115,18 @@ unsafe fn find_in_window(
     let process = agent_desktop_core::ProcessIdentity::new(entry.process.pid, process_instance);
     match adapter
         .inner
-        .resolve_element_strict(&entry, request.deadline)
+        .resolve_locator_anchor(&entry, request.deadline)
     {
         Ok(handle) => {
+            if let Err(error) = agent_desktop_core::refs::resolve_saved_ref::confirm_landed_element(
+                adapter.inner.as_ref(),
+                &entry,
+                &handle,
+                request.deadline,
+            ) {
+                set_last_error(&error);
+                return crate::error::last_error_code();
+            }
             match crate::actions::native_handle::into_ffi_handle(adapter_id, handle, process) {
                 Ok(token) => {
                     unsafe { (*out_handle).ptr = token };

@@ -7,7 +7,7 @@
     annotates truncated containers, --root replaces only that subtree's
     refs, find resolves by --native-id/--name/--role, bounds are present
     with --include-bounds and absent in compact mode, and the twin controls
-    prove both arms of bounds-hash disambiguation.
+    prove an identical pair is refused rather than guessed at.
 #>
 
 Set-StrictMode -Version 2.0
@@ -67,7 +67,7 @@ function Invoke-ObservationScenario {
     Register-Legs -Names @(
         'role-coverage-one-snapshot', 'scroll-container-refable', 'skeleton-depth-clamp',
         'root-drilldown-scoped-refs', 'find-by-name', 'find-by-role', 'bounds-present-with-flag',
-        'bounds-absent-compact', 'twins-ambiguous-after-move', 'twins-resolve-without-move'
+        'bounds-absent-compact', 'twins-ambiguous-after-move', 'twins-refused-without-move'
     )
 
     Enter-Stage -Lock DesktopLease -Body {
@@ -140,15 +140,15 @@ function Invoke-ObservationScenario {
        inside the caller's block just because the caller happens to hold
        the lock at runtime. #>
     Enter-Stage -Lock DesktopLease -Body {
-        <# select_by_bounds_hash resolves whenever exactly one live
-           candidate still matches the stored hash - the only way to reach
-           SearchVerdict::Ambiguous is to move BOTH twins so the stored
-           hash matches neither, which move-twins does. A second leg
-           proves the tie-break also works in the non-moved direction. #>
+        <# A twin is never unique at capture, so acting through either ref is
+           refused as AMBIGUOUS_TARGET before the window is read
+           (resolve_saved_ref::identity_not_unique), whether or not the card
+           changed since the find that published the ref. move-twins rebuilds
+           the card; the second leg leaves it alone. #>
         $twins = Find-TargetMatches -App $App -NativeId 'twin-control' -TimeoutSeconds 10
         if (-not $twins -or $twins.Count -ne 2) {
             Add-Fail -Leg 'twins-ambiguous-after-move' -Reason "expected exactly 2 twin-control hits, saw $(if ($twins) { $twins.Count } else { 0 })"
-            Add-Fail -Leg 'twins-resolve-without-move' -Reason 'skipped: twin discovery itself failed'
+            Add-Fail -Leg 'twins-refused-without-move' -Reason 'skipped: twin discovery itself failed'
             return
         }
         $staleTwin = $twins.Targets[0]
@@ -160,7 +160,7 @@ function Invoke-ObservationScenario {
            exactly this refusal-tier assertion. #>
         $movedEnvelope = Invoke-Target -Target $staleTwin -Action 'click'
         try {
-            Assert-Envelope -Envelope $movedEnvelope -ErrorCode 'AMBIGUOUS_TARGET' -Delivery 'not_delivered' -Retry 'safe'
+            Assert-Envelope -Envelope $movedEnvelope -ErrorCode 'AMBIGUOUS_TARGET' -Delivery 'not_delivered' -Retry 'safe' -Details @{ kind = 'identity_not_unique'; retryable = $false }
             Add-Pass -Leg 'twins-ambiguous-after-move'
         } catch {
             Add-Fail -Leg 'twins-ambiguous-after-move' -Reason $_.Exception.Message
@@ -170,13 +170,13 @@ function Invoke-ObservationScenario {
         if ($freshTwins -and $freshTwins.Count -eq 2) {
             $unmovedEnvelope = Invoke-Target -Target $freshTwins.Targets[0] -Action 'click'
             try {
-                Assert-Envelope -Envelope $unmovedEnvelope -Ok
-                Add-Pass -Leg 'twins-resolve-without-move'
+                Assert-Envelope -Envelope $unmovedEnvelope -ErrorCode 'AMBIGUOUS_TARGET' -Delivery 'not_delivered' -Retry 'safe' -Details @{ kind = 'identity_not_unique'; retryable = $false }
+                Add-Pass -Leg 'twins-refused-without-move'
             } catch {
-                Add-Fail -Leg 'twins-resolve-without-move' -Reason $_.Exception.Message
+                Add-Fail -Leg 'twins-refused-without-move' -Reason $_.Exception.Message
             }
         } else {
-            Add-Fail -Leg 'twins-resolve-without-move' -Reason 'twin-control did not re-resolve to 2 hits after the ambiguity leg'
+            Add-Fail -Leg 'twins-refused-without-move' -Reason 'twin-control did not re-resolve to 2 hits after the ambiguity leg'
         }
     }
 }

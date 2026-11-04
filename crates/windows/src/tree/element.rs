@@ -77,7 +77,7 @@ impl UIAElement {
     }
 
     /// The verified process identity, if this element resolved through the
-    /// strict resolver.
+    /// locator anchor.
     pub(crate) fn verified_process(&self) -> Option<(u32, &str)> {
         self.1
             .as_ref()

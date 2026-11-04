@@ -136,18 +136,6 @@ fn typed_metadata_names_each_variant() {
     assert_eq!(find.name(), "find");
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn caller_coordinates_batches_sessions_and_permission_guidance() {
-    assert!(command(&["permissions", "--guide"]).needs_caller_process());
-    assert!(command(&["session", "end", "other"]).needs_caller_process());
-    assert!(command(&["session", "gc"]).needs_caller_process());
-    assert!(command(&["batch", "[]"]).needs_caller_process());
-    assert!(!command(&["permissions"]).needs_caller_process());
-    assert!(!command(&["permissions", "--request"]).needs_caller_process());
-    assert!(!command(&["click", "@e1"]).needs_caller_process());
-}
-
 #[test]
 fn mutation_metadata_distinguishes_read_only_and_file_writing_forms() {
     assert!(command(&["click", "@e1"]).is_mutating());

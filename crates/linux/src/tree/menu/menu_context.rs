@@ -49,6 +49,9 @@ impl MenuContext {
         self.complete && other.complete && self == other
     }
 
+    /// The entry scoped to this popup. A menu ref carries the popup context it
+    /// was taken in; a popup that reads differently, or a ref without one,
+    /// cannot answer for it.
     pub(crate) fn entry_for(&self, entry: &RefEntry) -> Option<RefEntry> {
         let token = entry.identity.retained_object.as_deref()?;
         let (expected, object) = Self::decode(token)?;

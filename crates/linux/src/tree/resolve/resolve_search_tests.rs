@@ -10,7 +10,7 @@ fn a_childless_native_frame_is_conclusively_empty() {
 }
 
 #[test]
-fn retained_unnamed_containers_are_not_blocked_by_named_peers() {
+fn an_unnamed_container_is_never_admitted_by_its_object_path() {
     use crate::tree::resolve::resolve_fake::{FRAME_PATH, node};
     use crate::tree::vocabulary::role_numbers::PANEL;
 
@@ -20,18 +20,17 @@ fn retained_unnamed_containers_are_not_blocked_by_named_peers() {
     let mut entry = fake.entry_of("/viewport", false);
     entry.identity.retained_object = Some(":1.2/viewport".to_owned());
     let found = evaluate(&fake.walk(), &entry, false);
-    assert!(!found.unread_region);
-    assert_eq!(found.candidates.len(), 1);
-    assert_eq!(found.candidates[0].element.path(), "/viewport");
+    assert!(found.candidates.is_empty());
+    assert!(found.unread_region);
 
     entry.identity.retained_object = Some(":1.2/replaced".to_owned());
     let found = evaluate(&fake.walk(), &entry, false);
-    assert!(!found.unread_region);
     assert!(found.candidates.is_empty());
+    assert!(found.unread_region);
 }
 
 #[test]
-fn a_named_menu_item_resolves_only_its_context_scoped_object_path() {
+fn a_named_menu_item_is_counted_by_its_identity_not_its_object_path() {
     use crate::tree::resolve::resolve_fake::{FRAME_PATH, node};
     use crate::tree::vocabulary::role_numbers::MENU_ITEM;
 
@@ -48,11 +47,10 @@ fn a_named_menu_item_resolves_only_its_context_scoped_object_path() {
 
     let found = evaluate(&fake.walk(), &entry, false);
     assert!(!found.unread_region);
-    assert_eq!(found.candidates.len(), 1);
-    assert_eq!(found.candidates[0].element.path(), "/preferences");
+    assert_eq!(found.candidates.len(), 2);
 
     entry.identity.retained_object = Some(":1.2/removed".to_owned());
     let found = evaluate(&fake.walk(), &entry, false);
     assert!(!found.unread_region);
-    assert!(found.candidates.is_empty());
+    assert_eq!(found.candidates.len(), 2);
 }

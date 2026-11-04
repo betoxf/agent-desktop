@@ -15,7 +15,9 @@ use std::ptr;
 /// interactive elements, persists the refmap to disk, and writes the JSON envelope into `*out`.
 ///
 /// The JSON shape matches `agent-desktop snapshot`:
-/// `{"version":"2.5","ok":true,"command":"snapshot","data":{"app":"...","window":{...},"ref_count":N,"snapshot_id":"...","complete":true,"tree":{...}}}`.
+/// `{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"...","window":{...},"ref_count":N,"snapshot_id":"...","complete":true,"tree":{...}}}`.
+/// On macOS, `window` is omitted when a background app with no window is read
+/// through its process.
 ///
 /// `data.complete` is always present. A snapshot that exhausts its observation
 /// budget still succeeds with `"complete":false` and the tree it did observe,

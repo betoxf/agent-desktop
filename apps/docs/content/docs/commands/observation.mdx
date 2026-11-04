@@ -37,9 +37,9 @@ agent-desktop snapshot [--app NAME] [--window-id ID] [-i] [--compact] [--skeleto
   </tbody>
 </table>
 
-`data` carries `app`, `window`, `snapshot_id`, `ref_count`, `complete`, and `tree`; [Snapshots and refs](/desktop/snapshots-and-refs) shows a full example. With a post-action `--wait-for` ([Configuration](/desktop/configuration#post-action-wait-flags)), the result adds `elapsed_ms` and `matched_selector`.
+`data` carries `app`, `window` (left out when macOS reads a windowless app through its process, see [Surfaces](/desktop/surfaces)), `snapshot_id`, `ref_count`, `complete`, and `tree`; [Snapshots and refs](/desktop/snapshots-and-refs) shows a full example. With a post-action `--wait-for` ([Configuration](/desktop/configuration#post-action-wait-flags)), the result adds `elapsed_ms` and `matched_selector`.
 
-Errors specific to `snapshot`: `INVALID_ARGS` for `--root` with `--surface` or `--wait-for`, a bare ref, or `--max-depth` above 50; `WINDOW_NOT_FOUND` when there is no window to read; `AMBIGUOUS_TARGET` when the app has several candidate windows; `PLATFORM_NOT_SUPPORTED` for an unsupported `--surface`; `STALE_REF`, `SNAPSHOT_NOT_FOUND`, or `TIMEOUT` for a `--root` drill. See [What a drill refuses](/desktop/skeleton-and-drill-down#what-a-drill-refuses).
+Errors specific to `snapshot`: `INVALID_ARGS` for `--root` with `--surface` or `--wait-for`, a bare ref, or `--max-depth` above 50; `WINDOW_NOT_FOUND` when there is no window to read; `AMBIGUOUS_TARGET` when the app has several candidate windows; `INVALID_ARGS` for a `--surface` kind this OS does not have; `STALE_REF`, `SNAPSHOT_NOT_FOUND`, or `TIMEOUT` for a `--root` drill. See [What a drill refuses](/desktop/skeleton-and-drill-down#what-a-drill-refuses).
 
 Platform limits: supported surfaces and Chromium settle time differ by OS. See [macOS](/desktop/platforms/macos), [Windows](/desktop/platforms/windows), and [Linux](/desktop/platforms/linux).
 
@@ -85,7 +85,7 @@ agent-desktop find --app gnome-calculator --role button --name 7 --exact --first
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "find",
   "data": {
@@ -125,7 +125,7 @@ agent-desktop get <REF> [--property text|value|title|bounds|role|states]
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "get",
   "data": { "property": "value", "ref": "@s30sxlstqzdq8x:e19", "value": "entry" }
@@ -160,7 +160,7 @@ agent-desktop is @s30sxlstqzdq8x:e45 --property enabled
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "is",
   "data": { "applicable": true, "property": "enabled", "ref": "@s30sxlstqzdq8x:e45", "result": false }
@@ -195,7 +195,7 @@ agent-desktop screenshot --screen 0 screen.png
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "screenshot",
   "data": { "format": "png", "height": 900, "path": "/tmp/screen.png", "scale_factor": 1.0, "width": 1440 }
@@ -216,7 +216,7 @@ agent-desktop list-displays
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "list-displays",
   "data": [
@@ -259,15 +259,15 @@ agent-desktop --headed open-system-surface --surface KIND
     <tr><th>Flag</th><th>Default</th><th>Meaning</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>--surface KIND</code></td><td>required</td><td>The shell surface: <code>start-menu</code>, <code>taskbar</code>, <code>system-tray</code>, <code>system-tray-overflow</code>, or <code>action-center</code>.</td></tr>
+    <tr><td><code>--surface KIND</code></td><td>required</td><td>The shell surface: <code>start-menu</code>, <code>taskbar</code>, <code>system-tray</code>, <code>system-tray-overflow</code>, <code>action-center</code>, <code>dock</code>, or <code>menu-bar-extras</code>. <code>dock</code> and <code>menu-bar-extras</code> are the macOS kinds.</td></tr>
   </tbody>
 </table>
 
-`data` is `surface` and `window`, with the same fields as a [`list-windows`](/desktop/commands/app-window#list-windows) entry. This shape comes from the command's unit test:
+`data` is `surface` and, on Windows and Linux, `window`, with the same fields as a [`list-windows`](/desktop/commands/app-window#list-windows) entry. On macOS no window owns the surface, so `data` is only `{"surface": "dock"}` and `window` is left out. This shape comes from the command's unit test:
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "open-system-surface",
   "data": {
@@ -277,4 +277,4 @@ agent-desktop --headed open-system-surface --surface KIND
 }
 ```
 
-The command takes the foreground, so headless mode refuses it with `POLICY_DENIED` before anything is raised; pass `--headed`. A kind the OS does not expose returns `PLATFORM_NOT_SUPPORTED`, with the alternative in `platform_detail` where one exists. macOS has no shell surfaces, so every call there returns `PLATFORM_NOT_SUPPORTED`. Which kinds open on Windows and Linux is on their platform pages.
+The command takes the foreground, so on Windows and Linux headless mode refuses it with `POLICY_DENIED` before anything is raised; pass `--headed`. A kind the OS does not expose returns `INVALID_ARGS`, with the kinds to use in `suggestion` and the alternative in `platform_detail` where one exists. On macOS, `dock` and `menu-bar-extras` are always on screen, so the command returns them at once, headless, with no `--headed`; open Control Center or Notification Center by clicking its `menu-bar-extras` item. Which kinds open on Windows and Linux is on their platform pages.

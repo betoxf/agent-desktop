@@ -89,8 +89,8 @@ fn the_secure_control_s_live_value_is_withheld_at_the_reader_path() {
     let fixture = HostedFixture::spawn().expect("a fixture host starts");
 
     let entry = blank_secure_entry(&fixture);
-    let handle = crate::tree::resolve::resolve_element_strict(&entry, deadline())
-        .expect("the blank secure ref resolves through path and geometry");
+    let handle = crate::tree::resolve::resolve_anchor::resolve_locator_anchor(&entry, deadline())
+        .expect("the blank secure ref resolves through the locator anchor");
     let read = read_live_element(&handle, deadline()).expect("the shared read succeeds");
     let value = live_value(&read);
     assert_eq!(
@@ -248,6 +248,7 @@ fn blank_secure_entry(fixture: &HostedFixture) -> RefEntry {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: false,
         },
         geometry: agent_desktop_core::RefGeometry {
             bounds_space: None,
@@ -264,6 +265,7 @@ fn blank_secure_entry(fixture: &HostedFixture) -> RefEntry {
             source_window_title: None,
             source_window_bounds_hash: None,
             source_surface: agent_desktop_core::SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         scope: agent_desktop_core::RefScope {
             root_ref: None,
@@ -297,12 +299,12 @@ fn find_secure(
         path.extend_from_slice(prefix);
         return Ok(Some((path, properties, node_evidence, failed)));
     }
-    let mut ignored = false;
-    let children = crate::tree::resolve::resolve_search::enumerate_children(
+    let children = crate::tree::resolve::resolve_search::descent::read_children(
         source,
         element,
         budget,
-        &mut ignored,
+        &crate::tree::resolve::resolve_anchor::ANCHOR_DESCENT,
+        None,
     )?;
     for (index, child) in children.iter().enumerate() {
         prefix.push(index);

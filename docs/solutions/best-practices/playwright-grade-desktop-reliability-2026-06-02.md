@@ -34,10 +34,15 @@ selected namespace has no match.
 
 ### 2. Re-resolve strictly at action time
 
-Load the saved `RefEntry`, then let the adapter re-identify the live element
-from role, process generation, source, stable text identity, geometry, path,
-and native evidence. Zero matches is `STALE_REF`; more than one plausible match
-is `AMBIGUOUS_TARGET`. Mutable field values are not stable identity.
+Load the saved `RefEntry` and re-identify the live element before acting. An
+entry carrying an element token (macOS) resolves through the adapter, which owns
+re-identification on that platform. Every other entry resolves in core
+(`resolve_saved_ref`) from its capture proof: it must have been unique in one
+complete read of its window when captured, and exactly one live element must
+match its role, native id, stable name and description now. Zero matches is
+`STALE_REF`; two or more, or a ref never proven unique, is `AMBIGUOUS_TARGET`.
+Mutable values, geometry and path are never identity; the adapter only lands
+the element core chose, and core re-checks the landing.
 
 ### 3. Separate actionability from dispatch
 
@@ -80,10 +85,12 @@ and its timeout variant run that core command path. Route a new language-binding
 equivalent of a CLI command through the high-level path, and test both the
 observed effect and the reported mechanism for headed and headless input.
 
-`ad_execute_action` and the struct-based direct action entrypoints are
-deliberately lower-level escape hatches. They act on a caller-held native handle
-or entry, may apply the supplied policy verbatim, and do not claim RefStore-backed
-CLI parity. Their safety docs must say which boundary they skip: strict
+`ad_execute_action` and `ad_execute_action_with_policy` are deliberately
+lower-level escape hatches. They act on a caller-held native handle, may apply
+the supplied policy verbatim, and do not claim RefStore-backed CLI parity. The
+exact-entry calls (`ad_resolve_element_exact`,
+`ad_execute_ref_action_exact_with_policy`) refuse every well-formed entry from
+ABI 7, because an entry a caller builds carries no capture proof. Their safety docs must say which boundary they skip: strict
 resolution, preflight, or base-policy elevation. ABI structs are versioned and
 layout-pinned alongside the committed C header.
 

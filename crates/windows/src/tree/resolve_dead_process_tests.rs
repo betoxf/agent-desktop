@@ -9,7 +9,7 @@
 use agent_desktop_core::{Deadline, DeliverySemantics, ErrorCode, ProcessId, RefEntry};
 
 use crate::tree::fixture::{HostedFixture, ensure_test_apartment};
-use crate::tree::resolve::resolve_element_strict;
+use crate::tree::resolve::resolve_anchor::resolve_locator_anchor;
 
 fn entry_for(fixture: &HostedFixture, token: String, window_handle: isize) -> RefEntry {
     let mut entry = crate::tree::walk::walker_fake::ref_entry("button");
@@ -49,7 +49,7 @@ fn a_dead_owning_process_settles_terminally_on_the_first_attempt() {
 
     let deadline = Deadline::after(5_000).expect("a deadline");
     let started = std::time::Instant::now();
-    let result = resolve_element_strict(&entry, deadline);
+    let result = resolve_locator_anchor(&entry, deadline);
     let elapsed = started.elapsed();
 
     let error = match result {
@@ -88,7 +88,7 @@ fn a_live_owner_with_a_reassigned_handle_stays_on_the_retryable_path() {
     let entry = entry_for(&fixture_a, token_a, fixture_b.handle());
 
     let deadline = Deadline::after(5_000).expect("a deadline");
-    let result = resolve_element_strict(&entry, deadline);
+    let result = resolve_locator_anchor(&entry, deadline);
 
     let error = match result {
         Err(error) => error,

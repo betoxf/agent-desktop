@@ -4,7 +4,7 @@ Every command returns structured JSON:
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "click",
   "data": {
@@ -18,7 +18,7 @@ Errors include machine-readable codes and recovery hints:
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": false,
   "command": "click",
   "error": {
@@ -110,9 +110,25 @@ Each of these commands now returns the adapter's own report inside `data`:
 - The Rust `ActionResult` and `OperationReport` readers reject a payload without an explicit `disposition`; a missing disposition no longer reads back as delivered-unverified.
 - The C ABI is unchanged. Status-only functions such as `ad_close_app` and `ad_drag` still cannot expose the disposition, steps or target of a successful call.
 
+## Version 2.6 migration
+
+Version 2.6 changes which refs resolve on Windows and Linux, and on macOS for an element that yields no address. Such a ref resolves only when one complete read of its window proved it unique when it was captured and exactly one live element matches its role and stable fields now. The only new payload fields are `data.identity_unproven` and, on a ref action whose budget ran out after a refusal, `error.details.refusal`.
+
+- A ref to one of two identical controls, which earlier resolved by position or geometry, now fails `AMBIGUOUS_TARGET` with `details.kind: "identity_not_unique"` before anything is read. So does a ref captured from a window that could not be read whole within the snapshot timeout.
+- A refmap written before 2.6 records no capture proof, so all of its refs on these platforms fail the same way. Take a new snapshot.
+- An identical twin that appears after capture fails `AMBIGUOUS_TARGET` with `details.kind: "saved_ref_ambiguous"`.
+- All of these carry `details.retryable: false` and a `not_delivered` disposition. `disposition.retry` stays `safe` because nothing was sent, but repeating the same ref returns the same refusal.
+- When a ref action's full resolution under the lease is refused in a way that may clear, the action waits again within its `--timeout-ms`. If that budget then runs out, the error carries the refusal in `details.refusal`: its `code`, `message`, and `details` when the refusal had any.
+- A surface kind the OS does not have now returns `INVALID_ARGS` instead of `PLATFORM_NOT_SUPPORTED`, with the disposition `not_delivered` and `retry: "safe"`. FFI callers see the matching `AdResult` code change. An adapter with no surfaces at all still returns `PLATFORM_NOT_SUPPORTED`.
+- On macOS, `open-system-surface --surface dock` and `--surface menu-bar-extras` now succeed headless. Their `data` has no `window`; check for the field before reading it. Windows and Linux still return `window` and need `--headed`.
+- On macOS, a snapshot of a background app that lists no window (a menu bar app, the Dock, Control Center), and `--surface dock` or `--surface menu-bar-extras`, now succeed and read the app through its process. Earlier they failed `WINDOW_NOT_FOUND`. `data.window` is omitted from such a snapshot and `data.app` names the process; check for the field before reading `data.window.id`.
+
+A snapshot that needed one complete read of its window to prove its refs, and could not get it, says so with `"identity_unproven": true` in `data`. `complete` still describes the presented tree. On Windows and Linux, and on macOS for an element with no address, every ref of that snapshot fails `AMBIGUOUS_TARGET` with `details.kind: "identity_not_unique"`; retake the snapshot with a larger `--timeout-ms`. The field is omitted otherwise.
+
 ## Headed action verification
 
 - Headed ref interactions activate the exact source app/window before final pointer hit testing. Read-only readiness polling must not prevent a background target from reaching that focus phase; final hit testing remains mandatory before delivery.
+- On macOS, a ref read through a background app's process has no window to activate, and a target in a background app (a menu bar app, the Dock, a system panel) or a status item skips the frontmost-app and main-window checks, because such an app never becomes frontmost. Final hit testing still gates delivery. Any other target without a verified owning window is refused.
 - Focus and preparatory scrolling can change coordinates. Stability is verified against fresh live observations, not by requiring coordinates to remain equal to the original snapshot.
 - On macOS, post-activation focus confirmation uses fresh system-wide `AXFocusedApplication` and exact-window evidence with process-generation checks. A cached `NSWorkspace` foreground snapshot is not sufficient in a process that just activated another app.
 - Focusing an inactive text field can change its selection. A pre-focus range cannot establish the expected insertion into a nonempty field; such a result is explicitly unverified rather than falsely contradicted.
@@ -126,6 +142,21 @@ Earlier output synthesized a display name, falling back to `value` or
 `description`, then a `(unnamed <role>)` placeholder, so consumers that treated
 `name` as always present must tolerate its absence and apply their own fallback
 to `role` or `value`.
+
+## Ref re-identification details
+
+Every ref is re-identified from its stored entry or refused, and `details.kind` names which. The core resolver refuses a saved ref with one of these four kinds:
+
+| `details.kind` | Code | Meaning |
+|------|------|---------|
+| `retained_object_stale` | `STALE_REF` | macOS: the element's recorded address is dead, or its process, role or recorded identifier no longer matches. `details.reason` is `dead`, `pid`, `role` or `native_identifier`. No search runs, so the ref cannot land on a look-alike. Take a fresh snapshot. |
+| `saved_ref_absent` | `STALE_REF` | No live element matches the stored role and stable fields over complete evidence, so the element is gone. Take a fresh snapshot. |
+| `saved_ref_ambiguous` | `AMBIGUOUS_TARGET` | An element identical to the captured one appeared, so two or more live elements match the stored role and stable fields. A fresh snapshot refuses both as twins; act on a control that is unique in the window. |
+| `identity_not_unique` | `AMBIGUOUS_TARGET` | The ref was not proven the only element matching its role and stable fields when it was captured, so nothing is searched. Either an identical twin existed, or the window could not be read whole within the snapshot timeout (retake the snapshot with a larger `--timeout-ms`). It is reached on Windows, on Linux, and on macOS when the element yields no address. A twin is refused by every snapshot; only an explicit coordinate click (`--headed mouse-click --xy`) can pick one, it takes the foreground, and it is unavailable on a Linux Wayland session. |
+
+The fifth outcome is `resolution_identity_unknown`, which carries `TIMEOUT`: a live field could not be read, so the identity count stayed unproven. It is retryable. Linux menu and tray refs report the same kind as `STALE_REF`.
+
+After the core resolver chooses the element, the platform adapter lands it, and a landing failure keeps the adapter's own `details.kind` (for example `resolve_no_candidate` on Linux and Windows, or `resolution_complete_absence` on macOS). The platform skills list those kinds. `saved_ref_absent`, `saved_ref_ambiguous` and `identity_not_unique` carry `details.retryable: false`, because waiting cannot change the answer. Every one of these is `not_delivered`.
 
 ## Error codes
 

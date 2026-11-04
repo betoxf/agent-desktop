@@ -519,9 +519,7 @@ test('a failed relink that leaves an older native entry fails the install', {
   }
 });
 
-test('postinstall links the bin entry of an installed package to the native binary', {
-  skip: process.platform === 'win32',
-}, async () => {
+function installWithNativeScript(script) {
   const root = join(temporaryDirectory(), 'node_modules', 'agent-desktop');
   for (const part of ['package.json', 'bin/agent-desktop', 'lib/platform.js', 'scripts/postinstall.js']) {
     mkdirSync(join(root, part, '..'), { recursive: true });
@@ -529,17 +527,35 @@ test('postinstall links the bin entry of an installed package to the native bina
   }
   const source = join(temporaryDirectory(), 'release');
   mkdirSync(source);
-  writeFileSync(join(source, 'agent-desktop'), 'native', { mode: 0o755 });
+  const ran = join(source, 'ran');
+  writeFileSync(join(source, 'agent-desktop'), `#!/bin/sh\necho "$@" >> '${ran}'\n${script}`, { mode: 0o755 });
   writeFileSync(join(source, 'agent-desktop-macos-helper'), 'helper', { mode: 0o755 });
   process.env.AGENT_DESKTOP_BINARY_PATH = join(source, 'agent-desktop');
-  try {
-    const { code, stderr } = await runScriptWithOsStub(join(root, 'scripts', 'postinstall.js'), 'darwin', 'arm64');
-    assert.equal(code, 0, stderr);
-    assert.match(stderr, /Native binary linked: each call runs without the Node launcher/);
-  } finally {
-    delete process.env.AGENT_DESKTOP_BINARY_PATH;
-  }
+  return runScriptWithOsStub(join(root, 'scripts', 'postinstall.js'), 'darwin', 'arm64')
+    .then((result) => ({ ...result, root, ran }))
+    .finally(() => { delete process.env.AGENT_DESKTOP_BINARY_PATH; });
+}
+
+test('postinstall links the bin entry of an installed package to the native binary, then runs it once', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const { code, stderr, root, ran } = await installWithNativeScript('');
+  assert.equal(code, 0, stderr);
+  assert.match(stderr, /Native binary linked: each call runs without the Node launcher/);
+  assert.equal(readFileSync(ran, 'utf8'), 'version\n');
+  assert.doesNotMatch(stderr, /Could not stop command hosts/);
   const entry = lstatSync(join(root, 'bin', 'agent-desktop'));
   assert.equal(entry.ino, lstatSync(join(root, 'bin', 'agent-desktop-darwin-arm64')).ino);
   assert.equal(readFileSync(join(root, 'bin', 'agent-desktop-macos-helper'), 'utf8'), 'helper');
+});
+
+test('a failed leftover host cleanup warns without failing the install or the link', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const { code, stderr, root } = await installWithNativeScript('exit 1\n');
+  assert.equal(code, 0, stderr);
+  assert.match(stderr, /Could not stop command hosts left by an earlier version/);
+  assert.match(stderr, /Run `agent-desktop version` once to stop them/);
+  const entry = lstatSync(join(root, 'bin', 'agent-desktop'));
+  assert.equal(entry.ino, lstatSync(join(root, 'bin', 'agent-desktop-darwin-arm64')).ino);
 });

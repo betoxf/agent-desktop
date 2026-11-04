@@ -35,7 +35,7 @@ The library and the CLI run the same core and the same platform adapter; the `ag
 
 ## ABI version
 
-`AD_ABI_VERSION_MAJOR` is 6 in this header. The major increments when a symbol is removed or a struct layout changes; new functions and new result codes are additive. Call `ad_init(AD_ABI_VERSION_MAJOR)` once after loading the library: a mismatch returns `AD_RESULT_ERR_INVALID_ARGS`, and you should call nothing else.
+`AD_ABI_VERSION_MAJOR` is 7 in this header. The major increments when a symbol is removed or changes incompatibly: a struct layout change, or a call that now fails where it used to succeed. ABI 7 makes `ad_execute_ref_action_exact_with_policy` and `ad_resolve_element_exact` fail closed with `AD_RESULT_ERR_ACTION_NOT_SUPPORTED`. New functions and new result codes are additive. Call `ad_init(AD_ABI_VERSION_MAJOR)` once after loading the library: a mismatch returns `AD_RESULT_ERR_INVALID_ARGS`, and you should call nothing else.
 
 ## Next steps
 

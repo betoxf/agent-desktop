@@ -38,7 +38,7 @@ Ref actions are semantic UIA calls headless and under `--headed`, except the one
     <tr><td>Clipboard</td><td><code>clipboard-get</code>, <code>clipboard-set</code>, <code>clipboard-clear</code> (text and images)</td><td></td><td></td></tr>
     <tr><td>Wait</td><td>All modes except notifications with the Action Center closed</td><td><code>--notification</code> when the Action Center is closed</td><td></td></tr>
     <tr><td>Notifications</td><td><code>list-notifications</code> while the Action Center is open</td><td>Listing while it is closed, and every dismiss and action</td><td>Headless on a closed center: <code>POLICY_DENIED</code></td></tr>
-    <tr><td>Shell surfaces</td><td><code>snapshot --surface KIND</code> on a surface that is already present</td><td><code>open-system-surface</code> for <code>start-menu</code>, <code>taskbar</code>, <code>system-tray</code>, <code>system-tray-overflow</code>, <code>action-center</code></td><td><code>quick-settings</code>: <code>PLATFORM_NOT_SUPPORTED</code>, naming <code>action-center</code></td></tr>
+    <tr><td>Shell surfaces</td><td><code>snapshot --surface KIND</code> on a surface that is already present</td><td><code>open-system-surface</code> for <code>start-menu</code>, <code>taskbar</code>, <code>system-tray</code>, <code>system-tray-overflow</code>, <code>action-center</code></td><td><code>quick-settings</code>: <code>INVALID_ARGS</code>, naming <code>action-center</code></td></tr>
     <tr><td>System</td><td><code>status</code>, <code>permissions</code>, <code>version</code>, <code>batch</code>, <code>skills</code>, <code>session</code>, <code>cursor-overlay</code>, <code>trace</code></td><td></td><td></td></tr>
   </tbody>
 </table>

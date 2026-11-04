@@ -362,7 +362,6 @@ class KeyboardAndRefChurnLegTests(unittest.TestCase):
 
     def test_ref_churn_reads_the_fixture_readouts_not_the_command_result(self):
         source = REF_CHURN.read_text()
-        self.assertIn('--text "Beta stored: Beta"', source)
         self.assertIn('wait_target "$stable" value 3000 --value stable-ok', source)
         self.assertIn("data.found", source)
 
@@ -396,7 +395,6 @@ class KeyboardAndRefChurnLegTests(unittest.TestCase):
         for path in (KEYBOARD, REF_CHURN, RELIABILITY):
             used = literal_error_codes(path.read_text())
             self.assertEqual(used - known, set(), path.name)
-        self.assertIn("STALE_REF", literal_error_codes(REF_CHURN.read_text()))
         self.assertIn("STALE_REF", literal_error_codes(RELIABILITY.read_text()))
         self.assertEqual(
             literal_error_codes(KEYBOARD.read_text()), {"POLICY_DENIED", "INVALID_ARGS"}

@@ -135,3 +135,87 @@ fn a_menu_context_round_trips_utf8_paths_and_item_paths() {
     assert!(context.matches(&decoded));
     assert_eq!(object, "/org/a11y/atspi/accessible/メニュー/0");
 }
+
+#[test]
+fn a_menu_ref_without_its_popup_context_cannot_be_scoped_to_any_popup() {
+    let context = MenuContext::test("/popup", 10);
+    let entry = ref_entry("menuitem");
+
+    assert!(entry.identity.retained_object.is_none());
+    assert!(context.entry_for(&entry).is_none());
+}
+
+#[test]
+fn observed_menu_context_is_validated_through_the_adapter_without_a_live_read() {
+    use agent_desktop_core::{ObservationOps, SnapshotSurface};
+
+    let adapter = crate::LinuxAdapter::new();
+    let context = MenuContext::test("/popup", 10);
+    let complete = context.encode("/item");
+    let incomplete = MenuContext::test_incomplete("/popup", 10).encode("/item");
+    let mut entry = ref_entry("menuitem");
+    entry.source.source_surface = SnapshotSurface::Menu;
+    entry.identity.retained_object = Some(complete.clone());
+    let same_popup = context.encode("/other-item");
+    assert!(
+        adapter
+            .validate_saved_ref_context(&entry, Some(&same_popup))
+            .is_ok()
+    );
+
+    for (saved, observed, kind) in [
+        (
+            Some(complete.clone()),
+            Some(MenuContext::test("/replacement", 10).encode("/item")),
+            "menu_context_changed",
+        ),
+        (
+            Some(complete.clone()),
+            Some(MenuContext::test("/popup", 20).encode("/item")),
+            "menu_context_changed",
+        ),
+        (
+            Some(complete.clone()),
+            Some(incomplete.clone()),
+            "menu_context_unknown",
+        ),
+        (
+            Some(incomplete),
+            Some(complete.clone()),
+            "menu_context_unknown",
+        ),
+        (None, Some(complete.clone()), "menu_context_unknown"),
+        (Some(complete.clone()), None, "menu_context_unknown"),
+        (
+            Some(complete.clone()),
+            Some("malformed".into()),
+            "menu_context_unknown",
+        ),
+        (
+            Some("malformed".into()),
+            Some(complete.clone()),
+            "menu_context_unknown",
+        ),
+        (
+            Some(complete.clone()),
+            Some(context.encode("")),
+            "menu_context_unknown",
+        ),
+        (
+            Some(context.encode("")),
+            Some(complete),
+            "menu_context_unknown",
+        ),
+    ] {
+        entry.identity.retained_object = saved;
+        let error = adapter
+            .validate_saved_ref_context(&entry, observed.as_deref())
+            .unwrap_err();
+        assert_eq!(error.code, agent_desktop_core::ErrorCode::StaleRef);
+        let details = error.details.unwrap();
+        assert_eq!(details["kind"], kind);
+        assert_eq!(details["retryable"], kind == "menu_context_unknown");
+    }
+    entry.source.source_surface = SnapshotSurface::Window;
+    assert!(adapter.validate_saved_ref_context(&entry, None).is_ok());
+}

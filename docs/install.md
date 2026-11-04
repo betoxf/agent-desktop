@@ -81,7 +81,7 @@ the rest: `agent-desktop skills get linux`.
 
 **Windows.** `list-surfaces` lists each process's `window`, `focused`, `sheet` and `menu` surfaces. `snapshot
 --surface` also reads `taskbar`, `system-tray`, `system-tray-overflow`, `start-menu` and `action-center` without
-`--app`. `quick-settings` returns `PLATFORM_NOT_SUPPORTED` and names `action-center`, which carries those controls.
+`--app`. `quick-settings` returns `INVALID_ARGS` and names `action-center`, which carries those controls.
 
 `launch` on Windows takes an absolute path, or a bare name under System32 or the Windows directory, with or
 without `.exe`. It cannot resolve a display name such as "Google Chrome".

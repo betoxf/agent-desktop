@@ -35,12 +35,13 @@ pub(in crate::system) fn resolve_row(
 
 pub(crate) fn unknown_surface_error(kind: SnapshotSurface) -> AdapterError {
     AdapterError::new(
-        ErrorCode::PlatformNotSupported,
+        ErrorCode::InvalidArgs,
         format!(
             "'{}' is not a shell surface this adapter resolves",
             kebab(kind)
         ),
     )
+    .with_suggestion("Use taskbar, system-tray, system-tray-overflow, start-menu or action-center")
     .with_disposition(DeliverySemantics::not_delivered())
 }
 
@@ -71,7 +72,7 @@ pub(crate) fn not_open_error(kind: SnapshotSurface) -> AdapterError {
 pub(crate) fn refusal_error(row: &SurfaceKindRow) -> AdapterError {
     let holder = row.capability_holder.unwrap_or("an equivalent surface");
     AdapterError::new(
-        ErrorCode::PlatformNotSupported,
+        ErrorCode::InvalidArgs,
         format!(
             "the running build does not expose the '{}' shell surface",
             kebab(row.kind)

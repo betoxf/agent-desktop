@@ -68,13 +68,6 @@ cleanup_isolated_environment() {
         owner="$(sed -n '1p' "$suite_root/.agent-desktop-e2e-root" 2>/dev/null)"
     fi
     if [ "$owner" = "$$" ]; then
-        # The staged binary owns any retained AX objects and inherited lease.
-        if [ -n "$prepared_binary" ]; then
-            local host_pid
-            for host_pid in $(pgrep -fx "$prepared_binary" 2>/dev/null); do
-                kill "$host_pid" 2>/dev/null || true
-            done
-        fi
         remove_artifact "$suite_root" || true
     else
         echo "refusing to remove unowned E2E directory: $suite_root" >&2

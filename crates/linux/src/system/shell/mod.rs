@@ -2,8 +2,8 @@ pub(crate) mod anchor;
 pub(crate) mod call_failure;
 pub(crate) mod located;
 use agent_desktop_core::{
-    AdapterError, Deadline, ErrorCode, InteractionLease, InteractionPolicy, ObservationRequest,
-    ObservationRoot, ObservedTree, SnapshotSurface, WindowInfo,
+    AdapterError, Deadline, DeliverySemantics, ErrorCode, InteractionLease, InteractionPolicy,
+    ObservationRequest, ObservationRoot, ObservedTree, SnapshotSurface, WindowInfo,
 };
 
 use crate::system::{SharedBus, window::window_id};
@@ -67,13 +67,25 @@ pub(crate) fn is_shell_window(window: &WindowInfo) -> bool {
         .is_ok_and(|(bus_name, _)| identity::is_shell_owner(&bus_name, window.pid.get()))
 }
 
+fn unknown_kind_error(surface: SnapshotSurface) -> AdapterError {
+    AdapterError::new(
+        ErrorCode::InvalidArgs,
+        format!(
+            "'{}' is not a shell surface this desktop has",
+            surface.as_str()
+        ),
+    )
+    .with_suggestion("Use system-tray, action-center or quick-settings")
+    .with_disposition(DeliverySemantics::not_delivered())
+}
+
 pub(crate) fn resolve_surface(
     bus: &SharedBus,
     surface: SnapshotSurface,
     deadline: Deadline,
 ) -> Result<WindowInfo, AdapterError> {
     let Some(kind) = kinds::kind_of(surface) else {
-        return Err(AdapterError::not_supported("resolve_shell_surface"));
+        return Err(unknown_kind_error(surface));
     };
     let root = identity::find_root(bus, deadline)?;
     let landmark = open::container_landmark(kind);
@@ -93,14 +105,15 @@ pub(crate) fn open_surface(
     lease: &InteractionLease,
 ) -> Result<WindowInfo, AdapterError> {
     let Some(kind) = kinds::kind_of(surface) else {
-        return Err(AdapterError::not_supported("open_system_surface"));
+        return Err(unknown_kind_error(surface));
     };
     if kind == kinds::ShellKind::Dock {
         return Err(AdapterError::new(
-            ErrorCode::PlatformNotSupported,
+            ErrorCode::InvalidArgs,
             "The taskbar surface is not offered: no stock shell shows a dock",
         )
-        .with_suggestion("Open system-tray, action-center or quick-settings instead"));
+        .with_suggestion("Open system-tray, action-center or quick-settings instead")
+        .with_disposition(DeliverySemantics::not_delivered()));
     }
     open::open(bus, kind, policy, lease).map(|(window, _)| window)
 }

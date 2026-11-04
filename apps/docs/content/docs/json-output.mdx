@@ -1,16 +1,16 @@
 ---
 title: JSON output
 navTitle: JSON output
-description: The response envelope every agent-desktop command prints, its omission rules, the OperationReport shape, find results, exit codes, and the contract versions from 2.1 to 2.5.
+description: The response envelope every agent-desktop command prints, its omission rules, the OperationReport shape, find results, exit codes, and the contract versions from 2.1 to 2.6.
 ---
 
-Every command prints exactly one JSON envelope on a single line of standard output. Only `--help`, `--version`, and a bare `agent-desktop` print text instead. The contract version is `2.5`. Log output goes to standard error, so a parser can read standard output as one JSON value.
+Every command prints exactly one JSON envelope on a single line of standard output. Only `--help`, `--version`, and a bare `agent-desktop` print text instead. The contract version is `2.6`. Log output goes to standard error, so a parser can read standard output as one JSON value.
 
 ## Envelope
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "click",
   "data": {
@@ -25,7 +25,7 @@ Every command prints exactly one JSON envelope on a single line of standard outp
     <tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>version</code></td><td>string</td><td>Contract version. Currently <code>"2.5"</code>.</td></tr>
+    <tr><td><code>version</code></td><td>string</td><td>Contract version. Currently <code>"2.6"</code>.</td></tr>
     <tr><td><code>ok</code></td><td>boolean</td><td><code>true</code> when the command returned a result, <code>false</code> when it returned an error.</td></tr>
     <tr><td><code>command</code></td><td>string</td><td>The command name, such as <code>click</code> or <code>session</code>.</td></tr>
     <tr><td><code>data</code></td><td>object</td><td>The result. Present only when <code>ok</code> is <code>true</code>.</td></tr>
@@ -37,7 +37,7 @@ An error envelope has `error` and no `data`:
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": false,
   "command": "click",
   "error": {
@@ -64,7 +64,7 @@ An error envelope has `error` and no `data`:
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "snapshot",
   "data": {
@@ -145,7 +145,7 @@ A failed `--wait-for` after a delivered operation keeps the operation's own deli
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "find",
   "data": {
@@ -201,6 +201,7 @@ Check `version` before you parse. A consumer written for 2.0 or later can treat 
     <tr><td>2.3</td><td><code>launch</code> returns <code>app</code>, <code>pid</code>, <code>process_instance</code>, and an optional <code>window</code> instead of a bare window object. An application that shows no window is <code>ok: true</code> with <code>window</code> omitted, not <code>WINDOW_NOT_FOUND</code>.</td></tr>
     <tr><td>2.4</td><td>Stateful ref actions (<code>set-value</code>, <code>type</code>, <code>clear</code>, <code>check</code>, <code>uncheck</code>, <code>toggle</code>, <code>expand</code>, <code>collapse</code>) read the state back after one delivery attempt and reject an observed contradiction. A readback failure keeps the adapter's code and adds <code>details.kind: "post_action_verification"</code>. Missing evidence stays a successful <code>delivered_unverified</code> with <code>details.verification_scope: "unavailable"</code>.</td></tr>
     <tr><td>2.5</td><td>Breaking for the thirteen <a href="#operationreport">OperationReport</a> commands. The success flags <code>clicked</code>, <code>moved</code>, <code>scrolled</code>, <code>hovered</code>, <code>dragged</code>, <code>resized</code>, <code>minimized</code>, <code>maximized</code>, <code>restored</code>, <code>closed</code>, <code>cleared</code>, <code>requested</code> (<code>close-app</code>), and the inner <code>ok</code> of <code>clipboard-set</code> are removed. <code>data</code> is the adapter's report with <code>disposition</code>, <code>steps</code>, and <code>target</code>.</td></tr>
+    <tr><td>2.6</td><td>On Windows and Linux, and on macOS for an element with no address, a ref resolves only when one complete read of its window proved it unique at capture and exactly one live element matches it now. A ref to one of two identical controls, a ref from a window that could not be read whole, and every ref in a refmap written before 2.6 fail <code>AMBIGUOUS_TARGET</code> with <code>details.kind: "identity_not_unique"</code>. A twin that appears after capture fails with <code>saved_ref_ambiguous</code>. Both carry <code>details.retryable: false</code>.</td></tr>
   </tbody>
 </table>
 

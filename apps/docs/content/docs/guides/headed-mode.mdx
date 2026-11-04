@@ -16,7 +16,7 @@ A result shows which mechanism ran: in `data.steps`, `semantic_api` is an access
 
 `--headed` authorizes the focus and cursor side effects an action declares:
 
-- For a ref, core focuses the exact source window first, and pointer actions need a verified target point.
+- For a ref, core focuses the exact source window first, and pointer actions need a verified target point. On macOS, a ref from a background app (a menu bar app, the Dock, a system panel) or a status item has no window to focus; the click still needs a verified target point.
 - Raw coordinates (`--xy`) carry no window identity, so they never focus anything.
 - It applies to every entry of a [batch](/desktop/guides/batch).
 - It permits physical input; it does not force it. Each platform decides per action whether to use a physical or a semantic path, and `check`, `set-value`, and `expand` stay semantic under `--headed` everywhere.
@@ -47,7 +47,7 @@ Depending on the OS:
     <tr><td><code>scroll</code></td><td>Headless</td><td>Headless</td><td><code>--headed</code>, X11 only</td></tr>
     <tr><td>Listing notifications</td><td>Headless while the surface is open</td><td>Headless while the surface is open</td><td>Headless</td></tr>
     <tr><td>Notification mutations</td><td><code>--headed</code></td><td><code>--headed</code></td><td><code>--headed</code>, X11 only</td></tr>
-    <tr><td><code>open-system-surface</code></td><td>Not supported</td><td><code>--headed</code></td><td><code>--headed</code></td></tr>
+    <tr><td><code>open-system-surface</code></td><td>Headless</td><td><code>--headed</code></td><td><code>--headed</code></td></tr>
   </tbody>
 </table>
 
@@ -59,7 +59,7 @@ Depending on the OS:
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": false,
   "command": "hover",
   "error": {

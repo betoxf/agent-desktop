@@ -16,7 +16,7 @@ fn quick_settings_refusal_names_build_and_capability_holder() {
     let error = open_surface(SnapshotSurface::QuickSettings, headed(), deadline(5_000))
         .expect_err("quick-settings is absent on this build");
 
-    assert_eq!(error.code, ErrorCode::PlatformNotSupported);
+    assert_eq!(error.code, ErrorCode::InvalidArgs);
     let build = build_number();
     assert!(build > 0, "the build number must be read, not guessed");
     let detail = error.platform_detail.expect("the refusal carries a detail");

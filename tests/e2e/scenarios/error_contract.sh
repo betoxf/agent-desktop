@@ -23,7 +23,7 @@ error_contract_suite() {
         skipmsg "APP_NOT_FOUND carries the list-apps recovery hint: $DUPLICATE_PID_DEFECT"
     else
         assert "APP_NOT_FOUND carries the list-apps recovery hint" \
-            "$(case "$(json_field "$RUN_JSON" error.suggestion)" in *list-apps*) echo 1 ;; *) echo 0 ;; esac)" \
+            "$(json_field "$RUN_JSON" error.suggestion | grep -q list-apps && echo 1 || echo 0)" \
             "suggestion=$(json_field "$RUN_JSON" error.suggestion)"
         assert_error_envelope "unknown app is APP_NOT_FOUND" APP_NOT_FOUND 1 not_delivered \
             snapshot --app NoSuchApp12345 -i

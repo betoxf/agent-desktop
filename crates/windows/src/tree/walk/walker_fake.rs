@@ -12,10 +12,7 @@ use crate::tree::walk::walker::{
     NodeKey, TreeSource, WalkBudget, WalkOutcome, walk_from_root, walk_vocabulary,
 };
 #[cfg(target_os = "windows")]
-use crate::tree::{
-    element::UIAElement, resolve::resolve_search::enumerate_children,
-    walk::walker_source::UiaTreeSource,
-};
+use crate::tree::{element::UIAElement, walk::walker_source::UiaTreeSource};
 #[cfg(target_os = "windows")]
 use std::ops::ControlFlow;
 
@@ -195,6 +192,7 @@ pub(crate) fn ref_entry(role: &str) -> RefEntry {
             value: None,
             description: None,
             native_id: None,
+            unique_at_capture: false,
         },
         geometry: agent_desktop_core::RefGeometry {
             bounds_space: None,
@@ -211,6 +209,7 @@ pub(crate) fn ref_entry(role: &str) -> RefEntry {
             source_window_title: None,
             source_window_bounds_hash: None,
             source_surface: agent_desktop_core::SnapshotSurface::Window,
+            renderer_accessibility_forced: false,
         },
         scope: agent_desktop_core::RefScope {
             root_ref: None,
@@ -265,8 +264,8 @@ struct ScanLimits<'a> {
 /// re-implemented this recursion by hand; only the predicate and the value
 /// built on a match differ between them, so both live here once. A child
 /// enumeration failure anywhere aborts the whole search, as it does in the
-/// production search this mirrors (`resolve_search::enumerate_children`
-/// propagates the error with `?`).
+/// production path walk this mirrors ([`fake_children`] propagates the error
+/// with `?`).
 #[cfg(target_os = "windows")]
 pub(crate) fn scan_subtree<T>(
     source: &UiaTreeSource,
@@ -299,8 +298,7 @@ fn scan_at<T>(
     if let ControlFlow::Break(value) = visit(prefix, properties, evidence, failed) {
         return Ok(Some(value));
     }
-    let mut ignored = false;
-    let children = enumerate_children(source, element, limits.budget, &mut ignored)?;
+    let children = fake_children(source, element, limits.budget)?;
     for (index, child) in children.iter().enumerate() {
         prefix.push(index);
         let found = scan_at(source, child, limits, prefix, visit)?;
@@ -312,50 +310,20 @@ fn scan_at<T>(
     Ok(None)
 }
 
-/// Depth-first visit of every node in the subtree, index path included,
-/// tolerating a child-enumeration failure by simply not descending past it -
-/// the rest of the tree is still worth cataloguing.
-///
-/// The counterpart to `scan_subtree` for the tests that build a catalogue or
-/// a collection instead of stopping at a first match: `visit` decides what,
-/// if anything, to keep by closing over its own accumulator.
+/// The fake walk's child list, enumerated under the same bounded loop and
+/// policy the anchor descends with: a settled absence is a whole empty list,
+/// and any other read failure aborts the scan rather than inventing children.
 #[cfg(target_os = "windows")]
-pub(crate) fn walk_all(
-    source: &UiaTreeSource,
-    root: &UIAElement,
-    budget: &WalkBudget,
-    max_depth: u8,
-    visit: &mut impl FnMut(&[usize], LocatorEvidence),
-) {
-    walk_all_at(
-        source,
-        root,
-        ScanLimits { budget, max_depth },
-        &mut Vec::new(),
-        visit,
-    );
-}
-
-#[cfg(target_os = "windows")]
-fn walk_all_at(
+fn fake_children(
     source: &UiaTreeSource,
     element: &UIAElement,
-    limits: ScanLimits<'_>,
-    prefix: &mut Vec<usize>,
-    visit: &mut impl FnMut(&[usize], LocatorEvidence),
-) {
-    if prefix.len() >= limits.max_depth as usize {
-        return;
-    }
-    let (_, evidence, _) = source.evidence(element);
-    visit(prefix, evidence);
-    let mut ignored = false;
-    let Ok(children) = enumerate_children(source, element, limits.budget, &mut ignored) else {
-        return;
-    };
-    for (index, child) in children.iter().enumerate() {
-        prefix.push(index);
-        walk_all_at(source, child, limits, prefix, visit);
-        prefix.pop();
-    }
+    budget: &WalkBudget,
+) -> Result<Vec<UIAElement>, AdapterError> {
+    crate::tree::resolve::resolve_search::descent::read_children(
+        source,
+        element,
+        budget,
+        &crate::tree::resolve::resolve_anchor::ANCHOR_DESCENT,
+        None,
+    )
 }

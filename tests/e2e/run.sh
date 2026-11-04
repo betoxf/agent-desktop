@@ -141,6 +141,9 @@ check_fixture_contention || { finish; exit 1; }
 source "$here/scenarios/trace_performance.sh"
 # shellcheck source=tests/e2e/scenarios/notifications.sh
 source "$here/scenarios/notifications.sh"
+check_fixture_contention || { finish; exit 1; }
+# shellcheck source=tests/e2e/scenarios/os_surfaces.sh
+source "$here/scenarios/os_surfaces.sh"
 
 note "Multi-agent cursor probe"
 if [ "$fixture_owned" -eq 0 ] || "$bin" close-app "$app" --force >/dev/null 2>&1; then

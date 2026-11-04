@@ -32,7 +32,7 @@ Each platform supports a subset:
     <tr><th>Platform</th><th>Supported surfaces</th></tr>
   </thead>
   <tbody>
-    <tr><td>macOS</td><td><code>window</code>, <code>focused</code>, <code>menu</code>, <code>menubar</code>, <code>sheet</code>, <code>popover</code>, <code>alert</code></td></tr>
+    <tr><td>macOS</td><td><code>window</code>, <code>focused</code>, <code>menu</code>, <code>menubar</code>, <code>sheet</code>, <code>popover</code>, <code>alert</code>, <code>dock</code>, <code>menu-bar-extras</code></td></tr>
     <tr><td>Windows</td><td><code>window</code>, <code>focused</code>, <code>sheet</code>, <code>menu</code>, <code>start-menu</code>, <code>taskbar</code>, <code>system-tray</code>, <code>system-tray-overflow</code>, <code>action-center</code></td></tr>
     <tr><td>Linux</td><td><code>window</code>, <code>sheet</code>, <code>alert</code>, <code>menu</code>, plus GNOME Shell kinds the session can resolve</td></tr>
   </tbody>
@@ -48,7 +48,7 @@ Per-kind limits are on the platform pages: [macOS](/desktop/platforms/macos), [W
 { "supported_surfaces": ["window", "sheet", "alert", "menu"] }
 ```
 
-Read it before you ask for a surface. An unsupported kind fails with `PLATFORM_NOT_SUPPORTED`, with the supported list in `details.supported_surfaces` and your request in `details.requested_surface`. On Linux, an empty `supported_surfaces` means the accessibility bus did not answer, not that the desktop is empty.
+Read it before you ask for a surface. A kind this OS does not have fails with `INVALID_ARGS`, with the supported list in `details.supported_surfaces` and your request in `details.requested_surface`. On Linux, an empty `supported_surfaces` means the accessibility bus did not answer, not that the desktop is empty.
 
 ## Know when a surface opened
 
@@ -88,7 +88,7 @@ To reach one item, `find --surface` is cheaper than a dump:
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "find",
   "data": {
@@ -109,8 +109,8 @@ To reach one item, `find --surface` is cheaper than a dump:
 Which window agent-desktop reads depends on the kind:
 
 - `sheet`, `popover`, and `alert`: the app's accessible windows in order, focused first and then visible, and the first that presents one wins. With no `--app`, the frontmost process.
-- `menu`, `menubar`, and `focused`: any window of the app identifies the process, so several open windows are never ambiguous.
-- A shell kind needs no `--app`, because no application owns it.
+- `menu`, `menubar`, and `focused`: any window of the app identifies the process, so several open windows are never ambiguous. On macOS, `window`, `menubar` and `menu-bar-extras` read a background app (a menu bar app, the Dock, Control Center, Notification Center) through its process when it has no window; the result then has no `window` field. A regular app that has not shown its window yet returns `WINDOW_NOT_FOUND`: wait for the window. `focused` always needs a focused window.
+- A shell kind needs no `--app`, because no application owns it. On macOS, `menu-bar-extras` with `--app` reads that app's own status item instead.
 - `--window-id` pins the read to one window.
 
 A surface that is not open returns an error. On Linux, a closed menu returns `ELEMENT_NOT_FOUND`:
@@ -133,7 +133,7 @@ agent-desktop list-surfaces --app gtk3-widget-factory
 
 ```json
 {
-  "version": "2.5",
+  "version": "2.6",
   "ok": true,
   "command": "list-surfaces",
   "data": {
@@ -150,11 +150,11 @@ agent-desktop list-surfaces --app gtk3-widget-factory
 
 ## Open an OS shell surface
 
-`open-system-surface` raises a shell surface and returns the window it presents, in the `w-<id>` form that `list-windows` uses:
+`open-system-surface` raises a shell surface. On Windows and Linux it returns the window it presents, in the `w-<id>` form that `list-windows` uses. On macOS it returns only `{"surface": "dock"}`, because no window owns these surfaces:
 
 ```bash
 agent-desktop --headed open-system-surface --surface action-center
 agent-desktop snapshot --surface action-center -i --compact
 ```
 
-It takes the foreground, so headless mode refuses it with `POLICY_DENIED`; pass `--headed` (see [Headed mode](/desktop/guides/headed-mode)). An already-present surface returns without being raised again. A kind the OS does not expose returns `PLATFORM_NOT_SUPPORTED`, and `platform_detail` names the alternative. macOS has no shell surfaces; which kinds open on Windows and Linux is on their platform pages.
+It takes the foreground, so on Windows and Linux headless mode refuses it with `POLICY_DENIED`; pass `--headed` (see [Headed mode](/desktop/guides/headed-mode)). An already-present surface returns without being raised again. A kind the OS does not expose returns `INVALID_ARGS`, and the suggestion or `platform_detail` names the kinds to use instead. On macOS, `dock` and `menu-bar-extras` are always on screen, so the command returns them at once, headless, with no `--headed`; open Control Center or Notification Center by clicking its `menu-bar-extras` item. Which kinds open on Windows and Linux is on their platform pages.

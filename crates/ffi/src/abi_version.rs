@@ -6,13 +6,14 @@ use std::ffi::CStr;
 ///
 /// Version-bump rule: increment this constant (and update the header via
 /// `scripts/update-ffi-header.sh`) whenever a breaking change is made to the
-/// C ABI — a removed or incompatibly-changed `ad_*` symbol, or a layout
-/// change to any `repr(C)` struct. Additive changes (new `ad_*` symbols, new
-/// error codes) do **not** require a bump. It is recommended to call `ad_init`
-/// with the major compiled against the header to verify ABI compatibility; a
-/// mismatch means the header and dylib are incompatible and the consumer should
-/// refuse to proceed rather than risk undefined behaviour.
-pub const AD_ABI_VERSION_MAJOR: u32 = 6;
+/// C ABI — a removed or incompatibly-changed `ad_*` symbol, a layout change to
+/// any `repr(C)` struct, or a call that now fails where it used to succeed.
+/// Additive changes (new `ad_*` symbols, new error codes) do **not** require a
+/// bump. It is recommended to call `ad_init` with the major compiled against
+/// the header to verify ABI compatibility; a mismatch means the header and
+/// dylib are incompatible and the consumer should refuse to proceed rather than
+/// risk undefined behaviour.
+pub const AD_ABI_VERSION_MAJOR: u32 = 7;
 
 static MISMATCH_MESSAGE: &CStr =
     c"ABI major version mismatch: recompile against the installed header";

@@ -90,7 +90,7 @@ crates/macos/    agent-desktop-macos: AX API
 crates/windows/  agent-desktop-windows: UI Automation
 crates/linux/    agent-desktop-linux: AT-SPI
 crates/ffi/      agent-desktop-ffi: cdylib and the committed C header include/agent_desktop.h
-src/             agent-desktop binary: cli/, cli_args/, dispatch/, batch/, command_policy/, command_host/,
+src/             agent-desktop binary: cli/, cli_args/, dispatch/, batch/, command_policy/,
                  diagnostic/, visual_debug/
 skills/          agent skills, compiled into the binary
 tests/           golden fixtures, E2E harness per OS, FFI smoke tests
@@ -190,12 +190,12 @@ remain the transitive check.
 Every command prints one envelope. `docs/json-output.md` holds the full contract.
 
 ```json
-{ "version": "2.5", "ok": true, "command": "snapshot",
+{ "version": "2.6", "ok": true, "command": "snapshot",
   "data": { "app": "Finder", "snapshot_id": "s8f3k2p9", "ref_count": 14, "complete": true, "tree": { } } }
 ```
 
 ```json
-{ "version": "2.5", "ok": false, "command": "click",
+{ "version": "2.6", "ok": false, "command": "click",
   "error": { "code": "STALE_REF", "message": "...", "suggestion": "...",
              "recovery": { "strategy": "refresh_snapshot_then_retry_original", "retryable": true,
                            "requires_fresh_snapshot": true },
@@ -221,9 +221,11 @@ Every command prints one envelope. `docs/json-output.md` holds the full contract
 - An element gets a ref when its role is interactive (`INTERACTIVE_ROLES` in `crates/core/src/tree/roles.rs`) or it
   advertises a primary action. `SetFocus`, `RightClick` and `ScrollTo` alone do not qualify, because web runtimes
   advertise them on nearly every node.
-- Actions re-identify the element strictly from `RefEntry` evidence: pid, role, path and source surface, stable text
-  identity and a bounds hash. Control values are volatile and never identity. A mismatch returns `STALE_REF`; several
-  live candidates return `AMBIGUOUS_TARGET`.
+- Actions re-identify the element one of two ways. A genuine element token resolves through the adapter, which owns
+  re-identification on that platform (macOS). Every other ref resolves from its capture proof: role plus every
+  recorded stable field, that is native id, stable name and description, counted over one complete observation of the
+  window it was captured from. A ref that was not unique at capture is refused before the application is read. Zero
+  live matches is `STALE_REF`, two or more is `AMBIGUOUS_TARGET`, and control values and bounds are never identity.
 - All state lives under one root, `~/.agent-desktop` by default. `AGENT_DESKTOP_HOME` relocates it
   (`crates/core/src/storage/state_root.rs`). Refmaps live at `snapshots/<snapshot_id>/refmap.json`, capped at 1 MB each; the
   store keeps the newest 128 snapshots per namespace and prunes to 96. Command code goes through `RefStore`, which
