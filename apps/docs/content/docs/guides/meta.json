@@ -6,6 +6,7 @@
     "batch",
     "chromium-and-electron",
     "headed-mode",
-    "traces"
+    "traces",
+    "mcp"
   ]
 }

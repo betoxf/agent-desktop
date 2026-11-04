@@ -191,7 +191,8 @@ test('launcher notice prints once per version and leaves stdout and exit code al
   assert.equal(first.stdout, '["a","--b"]\n');
   assert.match(first.stderr, /runs through the Node launcher/);
   assert.match(first.stderr, /--allow-scripts=agent-desktop/);
-  assert.match(first.stderr, /npm install-scripts approve agent-desktop/);
+  assert.match(first.stderr, /npm install-scripts approve agent-desktop, then npm rebuild agent-desktop/);
+  assert.doesNotMatch(first.stderr, /\(npm 1\d\)/);
   assert.equal(statSync(join(binDir, '.launcher-notice-9.8.7')).isFile(), true);
   const second = await runLinux(script);
   assert.equal(second.code, 3);

@@ -15,7 +15,7 @@ description: >
 
 # agent-desktop on macOS
 
-Read the core skill first (`agent-desktop skills get desktop`) for the observe, act, verify loop. This skill covers only what is different on macOS. Symptoms and fixes are in [references/troubleshooting.md](references/troubleshooting.md).
+Read the core skill first (`agent-desktop skills get desktop`) for the observe, act, verify loop. This skill covers only what is different on macOS. When a command fails, find the symptom in [references/troubleshooting.md](references/troubleshooting.md).
 
 ## Requirements
 
@@ -27,7 +27,7 @@ Read the core skill first (`agent-desktop skills get desktop`) for the observe, 
 ## First contact
 
 1. Run `agent-desktop permissions`.
-2. If a permission is denied, run `agent-desktop permissions --guide`. It opens the correct System Settings page with a panel that shows the user which app to drag into the list. The user confirms with Touch ID or a password, and the panel moves to the next missing permission by itself. The command returns at once with `"guide": "started"`, `"already_running"` or `"not_needed"`. `agent-desktop permissions --request` shows the system prompts instead.
+2. If a permission is denied, run `agent-desktop permissions --guide`. It opens the right System Settings page with a panel that shows the user which app to drag into the list. The user confirms with Touch ID or a password, and the panel moves to the next missing permission by itself. The command returns at once with `"guide": "started"`, `"already_running"` or `"not_needed"`. `agent-desktop permissions --request` shows the system prompts instead.
 3. If the guide cannot run, open System Settings > Privacy & Security > Accessibility (Device Control and Data Access on macOS 27 and later). Add the launching app and turn it on.
 4. Run `agent-desktop permissions` to confirm `granted`. The next agent-desktop call sees a new grant, so the launching app does not need a restart. Each command reads permissions in its own process, so a permission granted during a `batch` applies from the next CLI call, not to later items in that batch.
 5. Run `agent-desktop snapshot -i` to confirm. It reads the focused app. `snapshot --app Finder -i` returns `WINDOW_NOT_FOUND` when Finder has no open window.
@@ -55,7 +55,3 @@ Read the core skill first (`agent-desktop skills get desktop`) for the observe, 
 **Keys.** The primary modifier is `cmd`: `press cmd+c`, `press cmd+s`. Quit shortcuts such as `cmd+q`, `cmd+shift+q`, `cmd+alt+esc`, `ctrl+cmd+q` and `cmd+shift+delete` return `POLICY_DENIED` unless you pass `--force`. To quit an app, use `close-app`. Punctuation keys work in combos, as the symbol (`,` `.` `/` `;` `'` `[` `]` `\` `-` `=` `` ` ``) or by name (`comma`, `period`, `slash`, `semicolon`, `quote`, `leftbracket`, `rightbracket`, `backslash`, `minus`, `equal`, `grave`). Each one is sent with the key that types it in the active keyboard layout, so `press cmd+,` opens Settings on ANSI and JIS keyboards alike.
 
 **Cursor overlay.** `cursor-overlay enable` draws the agent cursor in a click-through window. It never moves the OS pointer or activates an app. The macOS motion and image limits are in the core `commands-system` reference.
-
-## Next step
-
-When a command fails, find the symptom in [references/troubleshooting.md](references/troubleshooting.md).

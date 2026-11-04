@@ -80,9 +80,9 @@ pub(crate) enum Commands {
     ScrollTo(RefArgs),
     #[command(about = "Send a key combo: return, escape, cmd+c, shift+tab ...")]
     Press(PressArgs),
-    #[command(about = "Hold a key or modifier down")]
+    #[command(about = "Hold a key or modifier down (fails closed in stateless mode; use press)")]
     KeyDown(KeyComboArgs),
-    #[command(about = "Release a held key or modifier")]
+    #[command(about = "Release a held key or modifier (fails closed in stateless mode; use press)")]
     KeyUp(KeyComboArgs),
     #[command(about = "Move cursor to element center or coordinates (requires --headed)")]
     Hover(HoverArgs),

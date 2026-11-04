@@ -18,6 +18,9 @@ tracing-subscriber.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 agent-desktop-macos = { path = "../crates/macos" }
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(target_os = "windows")'.dependencies]
 agent-desktop-windows = { path = "../crates/windows" }
 
@@ -46,6 +49,10 @@ path = "tests/conformance.rs"
 [[test]]
 name = "cli_process"
 path = "tests/cli_process.rs"
+
+[[test]]
+name = "mcp_process"
+path = "tests/mcp_process.rs"
 
 [[test]]
 name = "command_host_absent"

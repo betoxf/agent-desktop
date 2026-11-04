@@ -1,6 +1,6 @@
 # agent-desktop
 
-Computer use for AI agents: read and operate desktop apps through the OS accessibility tree.
+Computer use for AI agents: see and operate desktop apps on macOS, Windows, and Linux through the OS accessibility tree.
 
 <p>
   <a href="https://vercel.com/labs#labs-products"><img alt="Vercel Labs Product" src="https://img.shields.io/badge/LABS-PRODUCT-0a0a0a.svg?style=for-the-badge&amp;logo=Vercel&amp;labelColor=000000" height="28"></a>
@@ -9,44 +9,36 @@ Computer use for AI agents: read and operate desktop apps through the OS accessi
   <a href="https://www.npmjs.com/package/agent-desktop"><img alt="npm downloads per month: agent-desktop" src="https://img.shields.io/npm/dm/agent-desktop.svg?style=for-the-badge&amp;labelColor=000000&amp;label=npm%20downloads" height="28"></a>
 </p>
 
-A CLI and C library for macOS, Windows and Linux. A snapshot returns JSON with a ref for every element an agent can act on. The agent acts on a ref and snapshots again to check, with no pixel matching; the loop stays in your agent.
+agent-desktop gives an AI agent computer use without screenshots or pixel matching. It reads the accessibility tree of a desktop app and returns it as JSON, with a ref for every element the agent can act on. The agent clicks or types on a ref, reads the UI again to check the result, and repeats. The loop lives in your agent; agent-desktop has no model inside. It ships as a CLI and a C library.
 
-Every CLI call runs in its own process. Headless calls still prohibit foreground activation and synthesized input.
+Snapshots, clipboard reads, screenshots, command output, and debug artifacts can contain private desktop content. Keep them out of public logs and uploads.
 
-Snapshots, clipboard reads, screenshots, command output and debug artifacts can contain private desktop content. Keep them out of public logs and uploads. The optional [JEV helper](skills/jev-desktop/SKILL.md) sends screen descriptions to a configured model provider; it is separate from the native CLI. See [privacy and data handling](docs/faq.md#what-data-can-contain-private-information).
-
-## Installation
-
-Install on macOS, Windows or Linux with npm:
+## Install
 
 ```bash
 npm install -g agent-desktop
-agent-desktop version
+agent-desktop status                # platform, permissions, supported surfaces
+agent-desktop permissions --guide   # macOS: walks you through the Accessibility grant
 ```
 
 Bun, Yarn and pnpm can install the same package. It includes native binaries and platform helpers for x64 and ARM64.
 For direct execution without a JavaScript launcher, download the matching native archive from
 [GitHub Releases](https://github.com/vercel-labs/agent-desktop/releases) and keep its helper beside the executable.
 
-Official Homebrew and Scoop packages are being submitted; they are not yet available in the default catalogs.
+On macOS and Linux, Homebrew also works: `brew install agent-desktop`. There is no official Scoop package yet.
 The repository no longer maintains a custom Homebrew tap or Scoop bucket.
 
-- **macOS** needs Accessibility permission: `agent-desktop permissions --guide`.
-- **Windows** needs no grant for apps at your terminal's integrity level.
-- **Linux** needs the user's graphical session with `at-spi2-core`.
-
-See [installation and permissions](docs/install.md) for package-manager behavior, release archives, and building from source.
+Release archives and building from source are covered in [Installation](https://agent-browser.dev/desktop/installation).
 
 ## Quick start
-
-Observe, act on a ref, observe again. Any app name from `agent-desktop list-apps` works; Finder is the macOS example.
-Each command prints one JSON envelope; a trimmed snapshot follows the commands.
 
 ```bash
 agent-desktop snapshot --app Finder -i      # interactive elements, each with a ref
 agent-desktop click @s8f3k2p9:e8            # act on a ref from that snapshot
 agent-desktop snapshot --app Finder -i      # observe again to verify
 ```
+
+Each command prints one JSON envelope. A trimmed snapshot:
 
 ```json
 {
@@ -55,7 +47,6 @@ agent-desktop snapshot --app Finder -i      # observe again to verify
   "command": "snapshot",
   "data": {
     "app": "Finder",
-    "window": { "id": "w-204749", "title": "Downloads" },
     "snapshot_id": "s8f3k2p9",
     "ref_count": 59,
     "complete": true,
@@ -70,19 +61,25 @@ agent-desktop snapshot --app Finder -i      # observe again to verify
 }
 ```
 
-- **Refs belong to their snapshot.** A bare `@e8` is rejected with `INVALID_ARGS`. When the UI changes, an action
-  returns `STALE_REF` or `AMBIGUOUS_TARGET`: take a new snapshot and use its refs.
-- **Several windows** give `AMBIGUOUS_TARGET`; `snapshot` lists the candidate window ids in `error.details`. Pass one
-  with `--window-id`.
-- **Dense apps:** map first with `snapshot --skeleton --app Slack -i --compact`, then drill into one region with
-  `snapshot --root @s8f3k2p9:e3 -i --compact`.
-- **Headless by default.** Ref actions go through the accessibility API without moving the pointer or taking focus.
-  The global `--headed` flag allows physical input.
-- **PowerShell.** Quote every ref (`'@s8f3k2p9:e8'`), because a bare `@token` is the splatting operator.
+- Refs carry their snapshot id. A bare `@e8` fails with `INVALID_ARGS`.
+- If the UI changed, an action returns `STALE_REF` or `AMBIGUOUS_TARGET`. Take a new snapshot and use its refs.
+- Actions are headless by default: no pointer movement, no focus change. Pass `--headed` for physical input.
+- In PowerShell, quote every ref (`'@s8f3k2p9:e8'`), because a bare `@token` is the splatting operator.
+
+The full walkthrough is in the [quick start](https://agent-browser.dev/desktop/quick-start).
+
+## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.png">
+  <img alt="The calling agent runs the agent-desktop CLI or the C library. Both go through agent-desktop-core and the PlatformAdapter trait to one platform crate, chosen at compile time, which reads the target app through the AX API on macOS, UI Automation on Windows, or AT-SPI on Linux." src="assets/architecture-light.png" width="720">
+</picture>
+
+Your agent calls the CLI, or the C library in process. Both run the same core, which reaches the OS only through `PlatformAdapter`. Each binary is built for one OS and talks to that OS's accessibility API.
 
 ## For AI agents
 
-The binary carries its own docs, matched to its version:
+The binary carries guides that match its version:
 
 ```bash
 agent-desktop skills get desktop      # the loop, refs, verification and retry rules
@@ -103,11 +100,21 @@ Use `agent-desktop` to see and operate desktop apps. Before the first use, run
 `agent-desktop skills get desktop` and `agent-desktop skills get platform`, and follow them.
 ```
 
-Every command prints one envelope with `ok` and either `data` or `error`. An error carries a `code`, a `disposition` and usually a `suggestion`; retry only when `error.disposition.retry` is `safe`. The contract, error codes and exit codes are in [docs/json-output.md](docs/json-output.md).
+Retry a failed command only when `error.disposition.retry` is `safe`. See [JSON output](https://agent-browser.dev/desktop/json-output) for the envelope, error codes, and exit codes.
+
+### MCP
+
+`agent-desktop mcp` serves every command as an MCP tool over stdio. A tool is named after its command (`desktop_snapshot`, `desktop_click`, `desktop_session_start`), takes that command's arguments, and returns its JSON envelope:
+
+```json
+{ "mcpServers": { "agent-desktop": { "command": "agent-desktop", "args": ["mcp"] } } }
+```
+
+Global flags given to `mcp`, such as `--session`, `--headed` or `--trace`, apply to every call.
 
 ## Commands
 
-It ships 60 command names, 56 operational commands. The other four (`key-down`, `key-up`, `mouse-down`, `mouse-up`) refuse to run until a daemon can release a held key or button.
+agent-desktop has 60 command names, 56 operational commands. The other four (`key-down`, `key-up`, `mouse-down`, `mouse-up`) refuse to run until a daemon can release a held key or button. [Commands](https://agent-browser.dev/desktop/commands) documents each one.
 
 | Group | Commands |
 |---|---|
@@ -123,24 +130,17 @@ It ships 60 command names, 56 operational commands. The other four (`key-down`, 
 
 ## Platform support
 
-| | macOS | Windows | Linux |
-|---|:---:|:---:|:---:|
-| Accessibility tree | Yes | Yes | Yes (AT-SPI) |
-| Click / type / keyboard | Yes | Yes | AT-SPI; X11 / GNOME keys |
-| Mouse input | Yes | Yes | X11, `--headed` |
-| Screenshot | Yes | Yes | X11 windows; Wayland portal |
-| Clipboard | Yes | Yes | Yes; Wayland needs `wl-clipboard` |
-| App & window management | Yes | Yes | Launch/list; X11 window control |
-| Notifications | Yes | Yes | GNOME Shell |
-| Shell surfaces (`open-system-surface`) | Dock, menu bar extras | Yes | GNOME tray, Action Center |
+| Platform | Requirement | Accessibility API |
+|---|---|---|
+| [macOS](https://agent-browser.dev/desktop/platforms/macos) | macOS 13 or later, Intel or Apple Silicon | AX API |
+| [Windows](https://agent-browser.dev/desktop/platforms/windows) | Windows 10 1809 or later, x64 or ARM64 | UI Automation |
+| [Linux](https://agent-browser.dev/desktop/platforms/linux) | Ubuntu 24.04 or later, x86_64 or aarch64, X11 or Wayland | AT-SPI |
 
-The Windows surface and `launch` notes and the Linux X11 and Wayland notes are in [docs/install.md](docs/install.md#platform-notes).
+Each platform page lists what works headless, what needs `--headed`, and what refuses.
 
-`agent-desktop skills get platform` prints the full capability table for the OS you run on.
+## C library
 
-## Language bindings
-
-Each release also ships `libagent_desktop_ffi` for macOS, Linux and Windows, so a program can call the tool in process instead of starting the CLI for each command. `agent-desktop skills get ffi` covers the entry points, memory ownership and threading rules.
+Each release ships `libagent_desktop_ffi`, so a program can call agent-desktop in process. See the [C library docs](https://agent-browser.dev/desktop/ffi).
 
 ```python
 import ctypes
@@ -162,25 +162,16 @@ cargo test "${HOST_PKGS[@]}"
 cargo clippy "${HOST_PKGS[@]}" --all-targets -- -D warnings
 ```
 
-On Windows, replace `agent-desktop-macos` in that list with `agent-desktop-windows`; on Linux, with `agent-desktop-linux`.
-[CONTRIBUTING.md](CONTRIBUTING.md) lists every gate. Build from source: [docs/install.md](docs/install.md#from-source).
+On Windows, use `agent-desktop-windows` instead of `agent-desktop-macos`; on Linux, `agent-desktop-linux`. [CONTRIBUTING.md](CONTRIBUTING.md) lists every gate.
 
 ## Documentation
 
-| I want to... | Read |
-|---|---|
-| Fix an install problem, grant permissions, verify a download or build from source | [docs/install.md](docs/install.md) |
-| Parse the JSON envelope, error codes and exit codes | [docs/json-output.md](docs/json-output.md) |
-| Drive the tool as an AI agent | `agent-desktop skills get desktop` ([skills/agent-desktop/](skills/agent-desktop/)) |
-| Learn what differs on one OS | [macOS](skills/agent-desktop-macos/), [Windows](skills/agent-desktop-windows/), [Linux](skills/agent-desktop-linux/) |
-| Call the C library | [skills/agent-desktop-ffi/](skills/agent-desktop-ffi/) |
-| Look up the vocabulary: refs, snapshots, sessions | [CONCEPTS.md](CONCEPTS.md) |
-| Contribute and pass the gates | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Read the engineering rules | [AGENTS.md](AGENTS.md) |
-| Learn from past bugs and lessons | [docs/solutions/](docs/solutions/) |
-| Find answers to common questions | [docs/faq.md](docs/faq.md) |
-| Report a vulnerability | [SECURITY.md](SECURITY.md) |
-| Get help | [SUPPORT.md](SUPPORT.md) |
+- [Introduction](https://agent-browser.dev/desktop): what it is and how it works
+- [Snapshots and refs](https://agent-browser.dev/desktop/snapshots-and-refs)
+- [Errors and recovery](https://agent-browser.dev/desktop/errors-and-recovery)
+- [Skills](https://agent-browser.dev/desktop/skills)
+- [CONCEPTS.md](CONCEPTS.md): vocabulary
+- [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [SUPPORT.md](SUPPORT.md)
 
 ## License
 

@@ -1,8 +1,8 @@
 # agent-desktop-ffi
 
-C-ABI cdylib over [`PlatformAdapter`](../../crates/core/src/adapter/mod.rs). Exposes
-`libagent_desktop_ffi.{dylib,so,dll}` to Python (ctypes), Swift, Go (cgo),
-Node (ffi-napi), and C++ consumers without spawning a CLI subprocess per call.
+A C-ABI library over the [`PlatformAdapter`](../../crates/core/src/adapter/mod.rs) trait. It builds a shared library for C, C++, Python (ctypes), Swift, Go (cgo) and Node (ffi-napi). Calls run in process, so a program does not start the CLI for each command.
+
+The full guide is at https://agent-browser.dev/desktop/ffi. It covers linking, the API, ownership and threading. The agent-facing version is the [`agent-desktop-ffi` skill](../../skills/agent-desktop-ffi/SKILL.md).
 
 ## Build
 
@@ -10,12 +10,13 @@ Node (ffi-napi), and C++ consumers without spawning a CLI subprocess per call.
 cargo build --profile release-ffi -p agent-desktop-ffi
 ```
 
-The `release-ffi` profile keeps `panic = "unwind"`, which is required for the
-`catch_unwind` traps that prevent panics from crossing the `extern "C"` boundary.
-Do **not** use `--release` — that profile sets `panic = "abort"`, which silently
-defeats every trap.
+The output is in `target/release-ffi/`: `libagent_desktop_ffi.dylib` on macOS, `libagent_desktop_ffi.so` on Linux, and `agent_desktop_ffi.dll` on Windows.
 
-For the CI / stub-adapter path (no AX permission required):
+Use `--profile release-ffi`, not `--release`. The `release` profile sets `panic = "abort"`, which turns off the `catch_unwind` traps at the `extern "C"` boundary without any error. The `release-ffi` profile keeps `panic = "unwind"`.
+
+A source build also needs the platform helper beside the library: `agent-desktop-macos-helper` on macOS, `agent-desktop-linux-clipboard-owner` on Linux.
+
+For CI and tests that need no accessibility permission, build the stub adapter. It returns `PLATFORM_NOT_SUPPORTED` for every adapter call.
 
 ```bash
 cargo build --profile release-ffi -p agent-desktop-ffi --features stub-adapter

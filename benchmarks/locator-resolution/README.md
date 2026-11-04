@@ -1,10 +1,6 @@
 # Locator resolution benchmark
 
-This deterministic harness compares the legacy full-snapshot locator path with
-the handle-free observed-tree evaluator over synthetic Chromium/Electron accessibility
-trees. It exercises deep anonymous wrapper chains, duplicate role/name
-candidates, moving bounds, simultaneous `AXIdentifier` and `AXDOMIdentifier`
-values, containment predicates, and large trees.
+A deterministic harness that compares the legacy full-snapshot locator path with the handle-free observed-tree evaluator. Both run over synthetic Chromium and Electron accessibility trees. The trees cover deep anonymous wrapper chains, duplicate role and name candidates, moving bounds, `AXIdentifier` and `AXDOMIdentifier` set at once, containment predicates and large trees.
 
 Run it without network access:
 
@@ -13,34 +9,22 @@ cargo run -p agent-desktop-core --release --example locator_benchmark \
   > /tmp/agent-desktop-locator-synthetic.json
 ```
 
-The JSON report includes 31-run p50/p95 wall-clock latency, candidate nodes,
-predicate work, requested synthetic attribute values, cardinality, and
-correctness. `live_find_selected_refs` uses the same selected-match-only
-materialization contract as the default CLI `find` path. `live_arena_direct` is
-reported separately as a lower-overhead direct-target metric, and
-`live_count_no_refmap` verifies that count-only requests perform no action or
-settable evidence reads. The harness does not claim absolute native AX calls:
-role-dependent action and settable probes make that model inaccurate. Native
-Slack/Electron IPC measurements require Accessibility permission and belong in
-the privileged macOS integration suite.
+The JSON report contains:
 
-This synthetic benchmark JSON is consumed by the repo-wide performance report:
-run `bash scripts/perf-baseline-compare.sh` (optionally with `--apps "Slack,Google
-Chrome"`) to produce `report.html`, covering the HEAD-vs-main fixture A/B,
-optional real-app read-only probes, and this synthetic benchmark.
+- p50 and p95 wall-clock latency over 31 measured runs
+- Candidate nodes, predicate work and the synthetic attribute values requested
+- Cardinality and correctness
 
-For privileged Electron/Chromium runs, the macOS adapter first asks whether the
-application root exposes `AXManualAccessibility` as settable, reads its current
-value, and sets it at most once when supported. The adapter then waits within
-the request's existing absolute deadline until the attribute reports ready,
-recording attempted/succeeded/ready activation in locator stats. Unsupported
-native applications are left unchanged. This follows
-[Electron's official third-party accessibility guidance](https://github.com/electron/electron/blob/main/docs/tutorial/accessibility.md),
-which documents setting `AXManualAccessibility` from native assistive software
-to expose Chromium's accessibility tree before automatic assistive-technology
-detection has enabled it. The
-[current Electron macOS implementation](https://github.com/electron/electron/blob/main/shell/browser/mac/electron_application.mm)
-advertises the attribute as settable, reports `true` only in complete mode, and
-handles `AXEnhancedUserInterface` separately; that source behavior is why the
-benchmark methodology requires a post-set readiness read instead of treating a
-successful setter as immediate readiness.
+The three live modes measure different things:
+
+- `live_find_selected_refs` uses the same selected-match-only materialization as the default CLI `find` path.
+- `live_arena_direct` is a lower-overhead direct-target metric, reported separately.
+- `live_count_no_refmap` checks that count-only requests perform no action or settable-evidence reads.
+
+The harness does not report absolute native AX call counts, because role-dependent action and settable probes make that count inaccurate. Native Slack and Electron measurements need Accessibility permission. Run them with the opt-in live harness, `tests/e2e/electron-live.sh`, not with this benchmark.
+
+To produce the repo-wide report, run `bash scripts/perf-baseline-compare.sh`, optionally with `--apps "Slack,Google Chrome"`. It writes `report.html`. The report covers the HEAD vs merge-base fixture A/B, the optional read-only app probes and this benchmark.
+
+## Electron and Chromium activation (macOS)
+
+For Electron and Chromium apps, the macOS adapter turns on the accessibility tree before it reads the app. It sets `AXManualAccessibility` when the app supports it, and otherwise `AXEnhancedUserInterface`. It skips the set when the value is already `true`. It then waits, within the request deadline, until the attribute reports ready. Native apps that do not expose the attribute are left unchanged. This follows [Electron's accessibility guidance for third-party assistive software](https://github.com/electron/electron/blob/main/docs/tutorial/accessibility.md). The benchmark reads readiness after the set, because a successful set does not mean the tree is ready.

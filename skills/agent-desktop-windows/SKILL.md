@@ -16,8 +16,8 @@ description: >
 
 # agent-desktop-windows
 
-The observe-act loop, ref system, JSON envelope, sessions and tracing are the
-same on every platform. This file covers only what differs on Windows.
+This file covers only what differs on Windows. The observe-act loop, refs, JSON
+envelope, sessions and tracing are the same on every platform.
 
 Requires Windows 10 1809+ / Windows Server 2019+ (x64 or ARM64). Run it in the
 interactive desktop session of the signed-in user. Session 0 (services and

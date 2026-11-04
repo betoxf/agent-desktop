@@ -1,17 +1,10 @@
-# Adapter Reliability Conformance
+# Adapter reliability conformance
 
-Every platform adapter must satisfy the same ref/action contract. The tests are
-written against `PlatformAdapter` semantics, so macOS AX, Windows UIA and Linux
-AT-SPI share the same expectations.
+Every platform adapter must meet the same ref and action contract. The tests are written against `PlatformAdapter` semantics, so macOS AX, Windows UIA and Linux AT-SPI share one set of expectations.
 
-The reusable command-path helper lives in `tests/conformance/ref_action_contract.rs`.
-`window_identity_contract.rs` holds the window-identity contract, and
-`macos_notification_contract.rs` the macOS-only notification contract. The
-executable smoke harness in `src/tests/conformance.rs` mounts all three and runs
-the ref/action helper against a mock adapter. A fixture driving a real adapter
-can call the same helper with adapter-provided refs.
+The reusable command-path helper is `tests/conformance/ref_action_contract.rs`. `window_identity_contract.rs` covers window identity, and `macos_notification_contract.rs` covers notifications (macOS only). `src/tests/conformance.rs` mounts all three and runs the ref and action helper against a mock adapter. A fixture that drives a real adapter can call the same helper with adapter-provided refs.
 
-## Required Gates
+## Required gates
 
 | Area | Required behavior |
 |------|-------------------|
@@ -25,7 +18,7 @@ can call the same helper with adapter-provided refs.
 | Session lifecycle | `session start/end/list/gc` manage manifests, the current-session pointer, and trace directories |
 | FFI parity | FFI ref actions use strict resolve and actionability checks before adapter dispatch |
 
-## Platform Matrix
+## Platform matrix
 
 | Fixture | macOS AX | Windows UIA | Linux AT-SPI |
 |---------|:--------:|:-----------:|:------------:|
@@ -37,17 +30,13 @@ can call the same helper with adapter-provided refs.
 | Batch item session overrides inherited session | Required | Required | Required |
 | FFI `AdRefEntry` preserves full identity envelope | Required | Required | Required |
 
-## Adding a Platform
+## Adding a platform
 
-Add adapter-specific integration fixtures, but keep expected errors and JSON
-shapes identical. Prefer semantic platform actions first (`AXPress`, UIA
-Invoke/Value/Selection patterns, AT-SPI actions). Coordinate input is a lower
-confidence fallback and must remain explicit in policy or command choice.
+Add adapter-specific integration fixtures, but keep expected errors and JSON shapes identical. Prefer semantic platform actions first (`AXPress`, UIA Invoke, Value and Selection patterns, AT-SPI actions). Coordinate input is a lower-confidence fallback, so it must stay explicit in policy or command choice.
 
-## Windows Private-Storage Gate
+## Windows private-storage gate
 
-Windows private-file behavior is verified by native tests, never by
-cross-compilation evidence alone. The Windows CI lanes run these suites natively:
+Verify Windows private-file behavior with native tests. Cross-compilation alone is not evidence. The Windows CI lanes run these suites natively:
 
 | Behavior | Native test |
 |----------|-------------|
@@ -59,9 +48,4 @@ cross-compilation evidence alone. The Windows CI lanes run these suites natively
 | Atomic replace succeeds over open readers and concurrent writers, and leaves no temporary residue | `replace_tests.rs` |
 | The binary and the FFI adapter install the hardened seam, and `session start` through a junction state root is refused with nothing written under the target | `src/tests/windows_private_file_install.rs`, `crates/ffi/tests/c_abi_windows_private_file_install.rs` |
 
-The module protects each private directory it creates with a protected DACL
-(`dacl::protect_directory`) granting SYSTEM, Administrators, the token user and
-the owner-eligible SIDs, and `dacl::require_private` checks that DACL before use.
-Files created in such a directory inherit those grants, which
-`a_profile_artifact_keeps_system_admins_and_user_and_never_users_across_create_and_replace`
-in `owner_tests.rs` pins.
+Each private directory the module creates gets a protected DACL (`dacl::protect_directory`) that grants SYSTEM, Administrators, the token user and the owner-eligible SIDs. `dacl::require_private` checks that DACL before use. Files created in such a directory inherit those grants. The test `a_profile_artifact_keeps_system_admins_and_user_and_never_users_across_create_and_replace` in `owner_tests.rs` pins this.

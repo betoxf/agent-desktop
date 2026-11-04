@@ -15,7 +15,7 @@ description: >
 
 # agent-desktop-ffi
 
-Direct C-ABI access to PlatformAdapter operations. Build the cdylib with the
+Direct C-ABI access to the same operations as the CLI. Build the cdylib with the
 `release-ffi` profile:
 
 ```sh

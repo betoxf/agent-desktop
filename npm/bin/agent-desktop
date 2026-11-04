@@ -17,7 +17,7 @@ function getBinaryName() {
 
 const LAUNCHER_NOTICE = [
   'agent-desktop: this command runs through the Node launcher because npm did not run the install script, which adds about 125 ms per call.',
-  'Allow it and reinstall to link the native binary: npm install -g agent-desktop --allow-scripts=agent-desktop (npm 11), or npm install-scripts approve agent-desktop (npm 12).',
+  'Allow it and reinstall to link the native binary: npm install -g agent-desktop --allow-scripts=agent-desktop. In a project, run npm install-scripts approve agent-desktop, then npm rebuild agent-desktop.',
 ].join('\n');
 
 // Reaching this launcher means postinstall never linked the native binary.

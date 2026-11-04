@@ -17,8 +17,8 @@ description: >
 
 # agent-desktop-linux
 
-The observe-act loop, refs, JSON envelope, sessions and tracing match every
-platform. This file covers only what differs on Linux.
+This file covers only what differs on Linux. The observe-act loop, refs, JSON
+envelope, sessions and tracing are the same on every platform.
 
 Needs Ubuntu 24.04+ (x86_64 or aarch64), a graphical session of the signed-in
 user and a running AT-SPI bus. Other distributions need the at-spi2-core bridge

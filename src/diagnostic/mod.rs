@@ -1,7 +1,5 @@
 pub(crate) fn clap_command_name(args: impl IntoIterator<Item = String>) -> String {
-    use clap::CommandFactory;
-
-    let command = crate::cli::Cli::command();
+    let command = crate::root_command();
     let global_flags: Vec<_> = command
         .get_arguments()
         .filter(|arg| arg.is_global_set())

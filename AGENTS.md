@@ -91,7 +91,7 @@ crates/windows/  agent-desktop-windows: UI Automation
 crates/linux/    agent-desktop-linux: AT-SPI
 crates/ffi/      agent-desktop-ffi: cdylib and the committed C header include/agent_desktop.h
 src/             agent-desktop binary: cli/, cli_args/, dispatch/, batch/, command_policy/,
-                 diagnostic/, visual_debug/
+                 diagnostic/, visual_debug/, mcp/
 skills/          agent skills, compiled into the binary
 tests/           golden fixtures, E2E harness per OS, FFI smoke tests
 probes/          raw platform measurements; FINDINGS.md rows are citable evidence
@@ -116,6 +116,12 @@ apps/docs/       Geistdocs site served at agent-browser.dev/desktop as a Vercel 
 **Dispatch.** `dispatch()` in `src/dispatch/mod.rs` is a direct `match` that calls each command's `execute()` in
 `crates/core/src/commands/`. There is no command trait or registry. Batch is not a second dispatcher: it deserializes
 JSON entries into the same `Commands` enum, runs the same `CommandPolicy` preflight and calls the same `dispatch()`.
+
+**MCP.** `agent-desktop mcp` (`src/mcp/`) is not a second command surface. It reads the clap command tree at runtime:
+each leaf command is one tool, its schema comes from the command's clap arguments and help, and a call rebuilds the
+argv and runs this binary as a child process. A command added to or removed from `Commands` appears in or disappears
+from the MCP tool list with no MCP change. `mcp` itself is attached to the root command in `main.rs`, outside
+`Commands`, so it is never a tool, a batch entry or a counted command.
 
 **Adding a command.**
 1. Create `crates/core/src/commands/<name>.rs` with an `execute()` function, its tests in `<name>_tests.rs`, and

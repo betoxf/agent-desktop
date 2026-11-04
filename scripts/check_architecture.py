@@ -33,7 +33,7 @@ CORE_DOMAINS = {"actionability", "actions", "adapter", "commands", "context", "c
                 "locator", "notifications", "ref_action", "refs", "response", "session", "snapshot",
                 "storage", "system", "trace", "tree", "wait"}
 BINARY_TOP_FILES = {"main.rs", "Cargo.toml"}
-BINARY_DIRS = {"batch", "cli", "cli_args", "command_policy", "diagnostic", "dispatch",
+BINARY_DIRS = {"batch", "cli", "cli_args", "command_policy", "diagnostic", "dispatch", "mcp",
                "tests", "visual_debug"}
 CAPABILITY_HOMES = {
     "PlatformAdapter": ("adapter.rs",),

@@ -9,7 +9,7 @@ publishes npm through trusted publishing (OIDC), and publishes GitHub archives, 
 with the built-in `GITHUB_TOKEN`. No extra release token or package-update commit is required.
 The npm job runs in the `Release` environment, so a reviewer approves it in the workflow run before it publishes.
 
-Homebrew and Scoop package definitions belong in `Homebrew/homebrew-core` and `ScoopInstaller/Main`.
-Their maintainers and update automation manage those catalogs after the initial submissions are accepted.
-Homebrew builds from source; Scoop downloads the Windows release archives. Catalog availability can lag
-behind npm and GitHub publication. Do not advertise default-catalog installation before acceptance.
+The Homebrew formula lives in `Homebrew/homebrew-core` and builds from the release tag's source archive.
+Homebrew's autobump automation detects the new tag and updates the formula, so the release needs no Homebrew step.
+Homebrew availability can lag behind npm and GitHub publication.
+There is no official Scoop package; do not advertise Scoop installation until `ScoopInstaller/Main` accepts one.
