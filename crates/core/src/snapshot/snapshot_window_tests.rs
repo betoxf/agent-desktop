@@ -1,4 +1,5 @@
 use super::*;
+use crate::WindowFilter;
 use crate::adapter::{ActionOps, InputOps, ObservationOps, SystemOps};
 
 struct WindowAdapter {

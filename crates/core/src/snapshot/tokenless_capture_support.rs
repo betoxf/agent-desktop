@@ -72,7 +72,7 @@ impl ObservationOps for CaptureAdapter {
         request: &ObservationRequest,
     ) -> Result<ObservedTree, AdapterError> {
         match root {
-            ObservationRoot::Window(_) => {
+            ObservationRoot::Window(_) | ObservationRoot::Application { .. } => {
                 self.captures.fetch_add(1, Ordering::SeqCst);
                 let tree = self.tree.lock().expect("the fixture tree locks").clone();
                 let tree = cut(tree, 0, request.max_logical_depth);

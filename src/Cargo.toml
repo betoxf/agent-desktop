@@ -51,6 +51,10 @@ name = "cli_process"
 path = "tests/cli_process.rs"
 
 [[test]]
+name = "cli_stdin"
+path = "tests/cli_stdin.rs"
+
+[[test]]
 name = "mcp_process"
 path = "tests/mcp_process.rs"
 

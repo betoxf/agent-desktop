@@ -1,5 +1,5 @@
 use agent_desktop_core::{AdapterError, AppInfo, ErrorCode};
-use std::{process::Output, time::Instant};
+use std::time::Instant;
 
 pub(crate) fn list_apps_until(deadline: Instant) -> Result<Vec<AppInfo>, AdapterError> {
     #[cfg(test)]
@@ -21,15 +21,17 @@ fn list_apps_with_filter(
     deadline: Instant,
 ) -> Result<Vec<AppInfo>, AdapterError> {
     if Instant::now() >= deadline {
-        return Err(AdapterError::timeout("ps app inventory timed out"));
+        return Err(AdapterError::timeout("process app inventory timed out"));
     }
-    let mut command = std::process::Command::new("/bin/ps");
-    command.args(["-axo", "pid=,comm="]);
-    let output = crate::system::process::run_with_deadline(&mut command, "ps", deadline)?;
-    let mut apps = apps_from_output(output)?;
-    apps.retain(|app| {
-        name.is_none_or(|name| agent_desktop_core::app_name_matches(&app.name, name))
-    });
+    let mut apps = Vec::new();
+    crate::system::process::process_arguments::visit_commands_until(deadline, |pid, command| {
+        if let Some(app) = app_from_command(pid, command)?
+            && name.is_none_or(|name| agent_desktop_core::app_name_matches(&app.name, name))
+        {
+            apps.push(app);
+        }
+        Ok(())
+    })?;
     enrich_process_instances(
         apps,
         crate::system::process::process_identity::token_for_pid,
@@ -64,82 +66,23 @@ pub(crate) fn is_cross_uid_identity_error(error: &AdapterError) -> bool {
             == Some("process_identity_permission")
 }
 
-fn apps_from_output(output: Output) -> Result<Vec<AppInfo>, AdapterError> {
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(inventory_error(
-            format!("ps app inventory exited with {}", output.status),
-            detail,
-        ));
+fn app_from_command(pid: i32, command: &[u8]) -> Result<Option<AppInfo>, AdapterError> {
+    if pid <= 0 {
+        return Ok(None);
     }
-    let text = String::from_utf8(output.stdout).map_err(|error| {
-        inventory_error(
-            "ps app inventory returned non-UTF-8 output".to_string(),
-            error.to_string(),
-        )
-    })?;
-    parse_apps(&text)
-}
-
-fn parse_apps(text: &str) -> Result<Vec<AppInfo>, AdapterError> {
-    let mut seen_pids = rustc_hash::FxHashSet::default();
-    let mut apps = Vec::new();
-
-    for line in text.lines() {
-        let line = line.trim_start();
-        if line.is_empty() {
-            continue;
-        }
-        let mut fields = line.splitn(2, char::is_whitespace);
-        let pid_text = fields.next().ok_or_else(malformed_output)?;
-        let command = fields
-            .next()
-            .map(str::trim)
-            .filter(|command| !command.is_empty())
-            .ok_or_else(malformed_output)?;
-        let pid = pid_text.parse::<i32>().map_err(|_| malformed_output())?;
-        if pid <= 0 {
-            return Err(malformed_output());
-        }
-        let Some(name) = app_name_from_command(command) else {
-            if command.contains(".app/Contents/MacOS")
-                && !command.contains("/Contents/Frameworks/")
-                && !command.contains("/Contents/PlugIns/")
-            {
-                return Err(malformed_output());
-            }
-            continue;
-        };
-        if seen_pids.insert(pid) {
-            apps.push(AppInfo {
-                name,
-                pid: crate::system::process::process_identity::from_pid_t(pid)?,
-                bundle_id: None,
-                process_instance: None,
-                presentation: None,
-            });
-        }
-    }
-
-    Ok(apps)
-}
-
-fn malformed_output() -> AdapterError {
-    inventory_error(
-        "ps app inventory returned malformed output".to_string(),
-        "expected one positive pid and executable path per line".to_string(),
-    )
-}
-
-fn inventory_error(message: String, detail: String) -> AdapterError {
-    AdapterError::new(ErrorCode::AppUnresponsive, message)
-        .with_suggestion("Retry after macOS finishes updating the process inventory")
-        .with_platform_detail(detail)
-        .with_details(serde_json::json!({
-            "kind": "inventory_source",
-            "source": "ps",
-            "retryable": true,
-        }))
+    let Some(name) = std::str::from_utf8(command)
+        .ok()
+        .and_then(app_name_from_command)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(AppInfo {
+        name,
+        pid: crate::system::process::process_identity::from_pid_t(pid)?,
+        bundle_id: None,
+        process_instance: None,
+        presentation: None,
+    }))
 }
 
 fn app_name_from_command(command: &str) -> Option<String> {

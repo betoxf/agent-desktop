@@ -81,8 +81,9 @@ fn merge_apps_rejects_pid_reuse_between_sources() {
 
 #[test]
 fn signal_inventory_rejects_even_one_missing_complete_source() {
-    let error = complete_apps_from_sources(Ok(vec![app("Finder", 10)]), Err(source_error("ps")))
-        .unwrap_err();
+    let error =
+        complete_apps_from_sources(Ok(vec![app("Finder", 10)]), Err(source_error("libproc")))
+            .unwrap_err();
 
     assert_eq!(error.code, ErrorCode::AppUnresponsive);
     let details = error.details.unwrap();

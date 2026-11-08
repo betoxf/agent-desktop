@@ -61,6 +61,33 @@ pub fn mark_deadline_elapsed(mut error: AdapterError) -> AdapterError {
     error.with_details(details)
 }
 
+pub(crate) fn ambiguous_live_match(entry: &RefEntry) -> AdapterError {
+    AdapterError::ambiguous_target(
+        "Two or more live elements match the saved ref's recorded role and stable identity",
+    )
+    .with_suggestion(
+        "An element identical to the captured one appeared, so neither can be picked by ref and \
+         a new snapshot refuses both as twins. Act on a control that is unique in the window, or, \
+         where headed pointer input is available, use an explicit --headed coordinate click.",
+    )
+    .with_details(json!({
+        "kind": "saved_ref_ambiguous",
+        "retryable": false,
+        "complete": true,
+        "role": entry.identity.role,
+    }))
+}
+
+pub(crate) fn absent(entry: &RefEntry) -> AdapterError {
+    AdapterError::stale_ref_because("No live element matches the saved ref's recorded identity")
+        .with_details(json!({
+            "kind": "saved_ref_absent",
+            "retryable": false,
+            "complete": true,
+            "role": entry.identity.role,
+        }))
+}
+
 #[cfg(test)]
 #[path = "resolve_errors_tests.rs"]
 mod tests;

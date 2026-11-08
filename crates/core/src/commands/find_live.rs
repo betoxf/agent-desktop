@@ -41,15 +41,20 @@ pub(super) fn execute(
     let mut resolution = match args.root.as_deref() {
         Some(root_ref) => rooted_resolution(adapter, query, root_ref, &request, context)?,
         None => {
-            let windows = snapshot::surface_windows(
+            let owners = snapshot::surface_target::resolve_owners(
                 adapter,
                 args.app.as_deref(),
                 args.window_id.as_deref(),
                 args.surface,
                 deadline,
             )?;
-            snapshot::first_surface_owner(windows, |window| {
-                resolve_query(adapter, query, ObservationRoot::Window(window), &request)
+            snapshot::window_capture::first_surface_owner(owners, |owner| {
+                resolve_query(
+                    adapter,
+                    query,
+                    owner.observation_root(args.surface),
+                    &request,
+                )
             })?
             .1
         }

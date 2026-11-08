@@ -1,7 +1,6 @@
-use serde_json::json;
-
 use crate::{
-    AdapterError, AppError, Deadline, IdentityMatch, PlatformAdapter, RefEntry, WindowInfo,
+    AdapterError, AppError, AppInfo, Deadline, IdentityMatch, PlatformAdapter, RefEntry,
+    WindowInfo,
     adapter::{NativeHandle, TreeOptions},
     locator::live_locator::{
         ObservationRequest, ObservationRoot, ObservedTree, materialize_ref_entry,
@@ -9,7 +8,9 @@ use crate::{
     refs::ref_full_predicate::FullPredicate,
     refs::ref_identity::element_token,
     refs::ref_live_predicate::LivePredicate,
-    refs::resolve_errors::{identity_not_unique, identity_unknown_error},
+    refs::resolve_errors::{
+        absent, ambiguous_live_match, identity_not_unique, identity_unknown_error,
+    },
 };
 
 /// The depth a whole-window observation reaches: the limit a snapshot walk
@@ -268,13 +269,25 @@ fn observe_window(
     window: &WindowInfo,
     lease: Option<&crate::InteractionLease>,
 ) -> Result<ObservedTree, AdapterError> {
-    let mut observed = crate::tree::renderer_accessibility::observe_tree(
-        adapter,
-        ObservationRoot::Window(window),
-        request,
-        lease,
-    )
-    .map_err(adapter_error)?;
+    let process_instance = window.process_instance.clone();
+    let app = AppInfo {
+        name: window.app.clone(),
+        pid: window.pid,
+        process_instance,
+        bundle_id: None,
+        presentation: None,
+    };
+    let root = if adapter.is_application_surface(request.surface) {
+        ObservationRoot::Application {
+            app: &app,
+            surface: request.surface,
+        }
+    } else {
+        ObservationRoot::Window(window)
+    };
+    let mut observed =
+        crate::tree::renderer_accessibility::observe_tree(adapter, root, request, lease)
+            .map_err(adapter_error)?;
     if let crate::locator::live_locator::ObservationSource::Window {
         renderer_accessibility_forced,
         ..
@@ -346,33 +359,6 @@ fn positional_anchor(
         ..entry.identity.clone()
     };
     Ok(anchor)
-}
-
-fn ambiguous_live_match(entry: &RefEntry) -> AdapterError {
-    AdapterError::ambiguous_target(
-        "Two or more live elements match the saved ref's recorded role and stable identity",
-    )
-    .with_suggestion(
-        "An element identical to the captured one appeared, so neither can be picked by ref and \
-         a new snapshot refuses both as twins. Act on a control that is unique in the window, or, \
-         where headed pointer input is available, use an explicit --headed coordinate click.",
-    )
-    .with_details(json!({
-        "kind": "saved_ref_ambiguous",
-        "retryable": false,
-        "complete": true,
-        "role": entry.identity.role,
-    }))
-}
-
-fn absent(entry: &RefEntry) -> AdapterError {
-    AdapterError::stale_ref_because("No live element matches the saved ref's recorded identity")
-        .with_details(json!({
-            "kind": "saved_ref_absent",
-            "retryable": false,
-            "complete": true,
-            "role": entry.identity.role,
-        }))
 }
 
 fn adapter_error(error: AppError) -> AdapterError {

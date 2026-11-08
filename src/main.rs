@@ -94,7 +94,7 @@ fn run() -> ExitCode {
 
     init_tracing(cli.visual_debug.verbose);
 
-    let cmd = match cli.command.take() {
+    let mut cmd = match cli.command.take() {
         Some(c) => c,
         None => {
             return match root_command().print_help() {
@@ -105,7 +105,14 @@ fn run() -> ExitCode {
     };
 
     let cmd_name = cmd.name();
-    finish(cmd_name, execute(cli, cmd))
+    let stdin = cli_args::stdin::input(&mut cmd).is_some();
+    if let Err(error) = cli_args::stdin::resolve_stdin_text(&mut cmd, std::io::stdin().lock()) {
+        return finish(cmd_name, Err(error));
+    }
+    finish(
+        cmd_name,
+        cli_args::stdin::redact_result(execute(cli, cmd), stdin),
+    )
 }
 
 /// The parsed command tree: every `Commands` variant plus `mcp`, which serves them.

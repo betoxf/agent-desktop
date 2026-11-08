@@ -191,7 +191,7 @@ fn required_sources_failed(
 ) -> AdapterError {
     let failures = [
         source_failure("ns_workspace", workspace),
-        source_failure("ps", process),
+        source_failure("libproc", process),
     ]
     .into_iter()
     .filter(|failure| !failure["code"].is_null())

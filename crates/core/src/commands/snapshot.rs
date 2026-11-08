@@ -129,19 +129,18 @@ pub(crate) fn format_snapshot_fields(
 ) -> Result<Value, AppError> {
     let ref_count = result.refmap.len();
     let tree = serde_json::to_value(&result.tree)?;
-    let win = &result.window;
 
     tracing::debug!(refs = ref_count, "tree: snapshot complete");
 
     let mut body = json!({
-        "app": win.app,
+        "app": result.owner.app_name(),
         "ref_count": ref_count,
         "snapshot_id": result.snapshot_id,
         "complete": result.complete,
         "tree": tree
     });
-    if !win.is_process_owner() {
-        body["window"] = json!({ "id": win.id, "title": win.title });
+    if let Some(window) = result.owner.window() {
+        body["window"] = json!({ "id": window.id, "title": window.title });
     }
     if !result.complete {
         body["truncated"] = json!(true);

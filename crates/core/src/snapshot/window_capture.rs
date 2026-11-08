@@ -1,5 +1,5 @@
 use crate::{
-    AppError, WindowInfo,
+    AppError, AppInfo, SnapshotOwner, WindowInfo,
     adapter::{PlatformAdapter, TreeOptions},
     locator::live_locator::{ObservationRequest, ObservationRoot, ObservedTree},
 };
@@ -92,6 +92,122 @@ pub(crate) fn capture_window(
         presentation_depth: None,
         identity_unproven: Some(unproven),
     })
+}
+
+pub(crate) fn first_surface_owner<T>(
+    owners: Vec<SnapshotOwner>,
+    mut observe: impl FnMut(&SnapshotOwner) -> Result<T, AppError>,
+) -> Result<(SnapshotOwner, T), AppError> {
+    let mut owners = owners.into_iter().peekable();
+    while let Some(owner) = owners.next() {
+        match observe(&owner) {
+            Err(AppError::Adapter(error))
+                if error.code == crate::ErrorCode::ElementNotFound && owners.peek().is_some() => {}
+            result => return result.map(|observed| (owner, observed)),
+        }
+    }
+    Err(
+        crate::AdapterError::new(crate::ErrorCode::WindowNotFound, "No owner to observe")
+            .unsent()
+            .into(),
+    )
+}
+
+pub(crate) fn capture_application(
+    adapter: &dyn PlatformAdapter,
+    opts: &TreeOptions,
+    app: &AppInfo,
+    surface: crate::SnapshotSurface,
+    deadline: crate::Deadline,
+) -> Result<WindowCapture, AppError> {
+    let depth = ObservationRequest::snapshot_logical_depth(opts);
+    let shallow = depth < crate::refs::resolve_saved_ref::WHOLE_WINDOW_DEPTH;
+    let mut unproven = None;
+    if shallow && !adapter.retains_element_tokens() {
+        let attempt = deadline.capped(deadline.remaining() * 3 / 4);
+        match whole_application(adapter, opts, app, surface, attempt) {
+            Ok(observed) => {
+                return Ok(WindowCapture {
+                    observed,
+                    presentation_depth: Some(depth),
+                    identity_unproven: None,
+                });
+            }
+            Err(reason) => unproven = Some(reason),
+        }
+    }
+    let observed = observe_application(adapter, opts, app, surface, deadline)?;
+    if !needs_whole_window(&observed) {
+        return Ok(WindowCapture {
+            observed,
+            presentation_depth: None,
+            identity_unproven: None,
+        });
+    }
+    let unproven = match unproven {
+        Some(reason) => reason,
+        None if !shallow => "the application read was cut short".to_owned(),
+        None => match whole_application(adapter, opts, app, surface, deadline) {
+            Ok(whole) => {
+                return Ok(WindowCapture {
+                    observed: whole,
+                    presentation_depth: Some(depth),
+                    identity_unproven: None,
+                });
+            }
+            Err(reason) => reason,
+        },
+    };
+    Ok(WindowCapture {
+        observed,
+        presentation_depth: None,
+        identity_unproven: Some(unproven),
+    })
+}
+
+fn whole_application(
+    adapter: &dyn PlatformAdapter,
+    opts: &TreeOptions,
+    app: &AppInfo,
+    surface: crate::SnapshotSurface,
+    deadline: crate::Deadline,
+) -> Result<ObservedTree, String> {
+    let options = TreeOptions {
+        max_depth: crate::refs::resolve_saved_ref::WHOLE_WINDOW_DEPTH,
+        skeleton: false,
+        ..*opts
+    }
+    .with_ref_identity_bounds();
+    let request = ObservationRequest::snapshot(&options, deadline)
+        .validate()
+        .map_err(|error| error.message)?;
+    match crate::tree::renderer_accessibility::observe_tree(
+        adapter,
+        ObservationRoot::Application { app, surface },
+        &request,
+        None,
+    ) {
+        Ok(observed) if observed.is_exhaustive() => Ok(observed),
+        Ok(_) => Err("the whole-application read was cut short".to_owned()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn observe_application(
+    adapter: &dyn PlatformAdapter,
+    opts: &TreeOptions,
+    app: &AppInfo,
+    surface: crate::SnapshotSurface,
+    deadline: crate::Deadline,
+) -> Result<ObservedTree, AppError> {
+    let options = opts.with_ref_identity_bounds();
+    let request = ObservationRequest::snapshot(&options, deadline).validate()?;
+    crate::tree::renderer_accessibility::observe_tree(
+        adapter,
+        ObservationRoot::Application { app, surface },
+        &request,
+        None,
+    )
 }
 
 /// The whole-window read that proves tokenless refs, or why it cannot.

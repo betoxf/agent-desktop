@@ -119,6 +119,17 @@ impl ActionOps for TitledField {
 impl InputOps for TitledField {}
 
 impl SystemOps for TitledField {
+    fn resolve_window_strict(
+        &self,
+        expected: &WindowInfo,
+        _deadline: crate::Deadline,
+    ) -> Result<WindowInfo, AdapterError> {
+        assert_eq!(expected.id, "w-1");
+        assert_eq!(expected.pid, crate::ProcessId::new(1));
+        assert_eq!(expected.process_instance.as_deref(), Some("test-instance"));
+        Ok(expected.clone())
+    }
+
     crate::adapter::guarded_interaction_lease!();
 }
 
@@ -127,8 +138,15 @@ impl SystemOps for TitledField {
 #[test]
 fn a_wait_for_runs_once_after_the_last_keystroke() {
     let _guard = HomeGuard::new();
-    let snapshot_id =
-        crate::commands::helpers::test_support::save_one_ref_snapshot("textfield", "SetValue");
+    let mut entry = crate::adapter::minimal_ref_entry("textfield", Some("Target"));
+    entry.source.source_window_id = Some("w-1".into());
+    entry.capabilities.available_actions = vec!["SetValue".into()];
+    let mut refmap = crate::RefMap::new();
+    refmap.allocate(entry);
+    let snapshot_id = crate::RefStore::new()
+        .unwrap()
+        .save_new_snapshot(&refmap)
+        .unwrap();
     let adapter = TitledField::default();
     let context = CommandContext::default().with_wait_selector(Some(WaitSelector {
         query_raw: ":abc".into(),

@@ -2,8 +2,11 @@
 
 use std::mem::{MaybeUninit, size_of};
 
+use super::process_arguments::{
+    PROC_UID_ONLY, argument_buffer, arguments, list_pids, read_arguments,
+};
+
 const HOST_MARKER: &[u8] = b"AGENT_DESKTOP_INTERNAL_COMMAND_HOST=1";
-const PROC_UID_ONLY: u32 = 4;
 const CS_OPS_IDENTITY: u32 = 11;
 const IDENTITY_BUFFER_LEN: usize = 512;
 const BLOB_HEADER_LEN: usize = 8;
@@ -26,7 +29,7 @@ pub fn stop_legacy_command_hosts() {
     let Some(mut buffer) = argument_buffer() else {
         return;
     };
-    for pid in user_processes(uid) {
+    for pid in list_pids(PROC_UID_ONLY, uid).unwrap_or_default() {
         if pid <= 0 || pid == own_pid || !has_marker(pid, &mut buffer) {
             continue;
         }
@@ -45,21 +48,9 @@ pub fn stop_legacy_command_hosts() {
 /// Whether a `KERN_PROCARGS2` buffer carries the host marker in its environment,
 /// skipping the executable path and arguments that precede it.
 pub(crate) fn environment_has_marker(procargs: &[u8]) -> bool {
-    let Some((count, rest)) = procargs.split_first_chunk::<4>() else {
+    let Some((arguments, mut rest)) = arguments(procargs) else {
         return false;
     };
-    let arguments = i32::from_ne_bytes(*count);
-    if arguments <= 0 {
-        return false;
-    }
-    let Some(path_end) = rest.iter().position(|byte| *byte == 0) else {
-        return false;
-    };
-    let rest = &rest[path_end + 1..];
-    let Some(arguments_start) = rest.iter().position(|byte| *byte != 0) else {
-        return false;
-    };
-    let mut rest = &rest[arguments_start..];
     for _ in 0..arguments {
         let Some(end) = rest.iter().position(|byte| *byte == 0) else {
             return false;
@@ -98,32 +89,6 @@ fn is_agent_desktop(pid: libc::pid_t) -> bool {
     read == 0 && blob_names_agent_desktop(&blob)
 }
 
-fn user_processes(uid: libc::uid_t) -> Vec<libc::pid_t> {
-    let size = unsafe { libc::proc_listpids(PROC_UID_ONLY, uid, std::ptr::null_mut(), 0) };
-    let Ok(size) = usize::try_from(size) else {
-        return Vec::new();
-    };
-    let mut pids = vec![0; size / size_of::<libc::pid_t>() + 1];
-    loop {
-        let Some(bytes) = pids.len().checked_mul(size_of::<libc::pid_t>()) else {
-            return Vec::new();
-        };
-        let Ok(bytes) = i32::try_from(bytes) else {
-            return Vec::new();
-        };
-        let written =
-            unsafe { libc::proc_listpids(PROC_UID_ONLY, uid, pids.as_mut_ptr().cast(), bytes) };
-        if written <= 0 {
-            return Vec::new();
-        }
-        if written < bytes {
-            pids.truncate(written as usize / size_of::<libc::pid_t>());
-            return pids;
-        }
-        pids.resize(pids.len() * 2, 0);
-    }
-}
-
 fn process_start_time(pid: libc::pid_t, uid: libc::uid_t) -> Option<(u64, u64)> {
     let info = process_info(pid)?;
     (info.pbi_pid == pid as u32 && info.pbi_uid == uid && info.pbi_status != libc::SZOMB)
@@ -145,43 +110,8 @@ fn process_info(pid: libc::pid_t) -> Option<libc::proc_bsdinfo> {
     (read == size).then(|| unsafe { info.assume_init() })
 }
 
-fn argument_buffer() -> Option<Vec<u8>> {
-    let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
-    let mut max: libc::c_int = 0;
-    let mut size = size_of::<libc::c_int>();
-    let read = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            2,
-            (&mut max as *mut libc::c_int).cast(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if read != 0 {
-        return None;
-    }
-    usize::try_from(max)
-        .ok()
-        .filter(|max| *max > 0)
-        .map(|max| vec![0u8; max])
-}
-
 fn has_marker(pid: libc::pid_t, buffer: &mut [u8]) -> bool {
-    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
-    let mut size = buffer.len();
-    let read = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            3,
-            buffer.as_mut_ptr().cast(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    read == 0 && size <= buffer.len() && environment_has_marker(&buffer[..size])
+    read_arguments(pid, buffer).is_some_and(environment_has_marker)
 }
 
 #[cfg(test)]

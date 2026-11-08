@@ -1,12 +1,11 @@
 use crate::{
-    AccessibilityNode, AppError, WindowInfo,
-    adapter::{PlatformAdapter, TreeOptions, WindowFilter},
+    AccessibilityNode, AppError, SnapshotOwner, WindowInfo,
+    adapter::{PlatformAdapter, TreeOptions},
     context::CommandContext,
     refs::RefMap,
     refs::ref_alloc::{self, RefAllocConfig},
     refs::ref_alloc_options::RefAllocOptions,
     refs::ref_alloc_scope::RefAllocScope,
-    refs::ref_alloc_source::RefAllocSource,
     refs::refs_store::RefStore,
     trace::trace_artifacts,
 };
@@ -16,7 +15,7 @@ use serde_json::json;
 pub struct SnapshotResult {
     pub tree: AccessibilityNode,
     pub refmap: RefMap,
-    pub window: WindowInfo,
+    pub owner: SnapshotOwner,
     pub snapshot_id: Option<String>,
     pub complete: bool,
     pub nodes_observed: usize,
@@ -26,6 +25,14 @@ pub struct SnapshotResult {
 }
 
 impl SnapshotResult {
+    pub(crate) fn save_refmap(&self, store: &RefStore) -> Result<String, AppError> {
+        if self.complete {
+            store.save_new_snapshot(&self.refmap)
+        } else {
+            store.save_new_snapshot_detached(&self.refmap)
+        }
+    }
+
     pub(crate) fn bind_snapshot_id(&mut self, snapshot_id: String) {
         crate::refs::ref_token::qualify_tree_refs(&mut self.tree, &snapshot_id);
         self.snapshot_id = Some(snapshot_id);
@@ -39,9 +46,24 @@ pub fn build(
     window_id: Option<&str>,
     deadline: crate::Deadline,
 ) -> Result<SnapshotResult, AppError> {
-    let windows = surface_windows(adapter, app_name, window_id, opts.surface, deadline)?;
-    let (window, capture) = first_surface_owner(windows, |window| {
-        window_capture::capture_window(adapter, opts, window, deadline)
+    let owners =
+        surface_target::resolve_owners(adapter, app_name, window_id, opts.surface, deadline)?;
+    build_for_owners(adapter, opts, owners, deadline)
+}
+
+pub(crate) fn build_for_owners(
+    adapter: &dyn PlatformAdapter,
+    opts: &TreeOptions,
+    owners: Vec<SnapshotOwner>,
+    deadline: crate::Deadline,
+) -> Result<SnapshotResult, AppError> {
+    let (owner, capture) = window_capture::first_surface_owner(owners, |owner| match owner {
+        SnapshotOwner::Application(app) => {
+            window_capture::capture_application(adapter, opts, app, opts.surface, deadline)
+        }
+        SnapshotOwner::Window(window) => {
+            window_capture::capture_window(adapter, opts, window, deadline)
+        }
     })?;
     let identity_unproven = capture.identity_unproven.clone();
     let (raw_tree, complete, nodes_observed, observed) = capture.into_parts()?;
@@ -55,15 +77,7 @@ pub fn build(
             compact: opts.compact,
             force_renderer_accessibility: opts.force_renderer_accessibility,
         },
-        source: RefAllocSource {
-            pid: window.pid,
-            app: Some(window.app.as_str()),
-            window_id: (!window.is_process_owner()).then_some(window.id.as_str()),
-            window_title: Some(window.title.as_str()),
-            window_bounds_hash: window.bounds.as_ref().and_then(crate::Rect::bounds_hash),
-            process_instance: window.process_instance.as_deref(),
-            surface: opts.surface,
-        },
+        source: owner.ref_source(opts.surface),
         scope: RefAllocScope {
             root_ref_id: None,
             path_prefix: &[],
@@ -77,7 +91,7 @@ pub fn build(
     Ok(SnapshotResult {
         tree,
         refmap,
-        window,
+        owner,
         snapshot_id: None,
         complete,
         nodes_observed,
@@ -85,22 +99,6 @@ pub fn build(
     })
 }
 
-/// Resolves the window that identifies the process to observe. An app-level
-/// surface is not owned by a single window, so several open windows must not be
-/// reported as ambiguous when one is requested.
-///
-/// Kinds naming OS chrome rather than a window's own sub-surface are routed to
-/// the adapter's `resolve_shell_surface` seam ahead of the application path,
-/// because no application owns them and the window inventory cannot identify
-/// them - not even a recorded or requested window id, which a shell container
-/// carries too. An adapter that answers with the trait default falls through to
-/// the application path, so an adapter's shape never changes by upgrading; every
-/// other answer - a missing surface, a build refusal, a timeout - is returned
-/// as the adapter supplied it, and a surface that answers with another window
-/// leaves the id to the application path.
-///
-/// `menu-bar-extras` with an app name is that app's own status item and takes the
-/// application path, where a background app that lists no window is read through its process.
 pub(crate) fn resolve_window_for_surface(
     adapter: &dyn PlatformAdapter,
     app_name: Option<&str>,
@@ -108,77 +106,7 @@ pub(crate) fn resolve_window_for_surface(
     surface: crate::SnapshotSurface,
     deadline: crate::Deadline,
 ) -> Result<WindowInfo, AppError> {
-    let app_status_item = app_name.is_some() && surface == crate::SnapshotSurface::MenuBarExtras;
-    if is_shell_surface(surface) && !app_status_item {
-        match adapter.resolve_shell_surface(surface, deadline) {
-            Ok(window) if window_id.is_none_or(|id| window.id == id) => return Ok(window),
-            Ok(_) => {}
-            Err(error)
-                if window_id.is_none()
-                    && !error.is_default_not_supported("resolve_shell_surface") =>
-            {
-                return Err(error.into());
-            }
-            Err(_) => {}
-        }
-    }
-    if window_id.is_some() || (surface == crate::SnapshotSurface::Window && app_name.is_none()) {
-        return resolve_window(adapter, app_name, window_id, deadline);
-    }
-    let windows = windows_for_app(adapter, app_name, deadline)?;
-    if let (true, Some(app)) = (windows.is_empty() && is_process_surface(surface), app_name) {
-        return crate::system::app_lookup::windowless_app_owner(adapter, app, deadline);
-    }
-    if let (crate::SnapshotSurface::Window, Some(app)) = (surface, app_name) {
-        return select_app_window(windows, app);
-    }
-    crate::system::window_lookup::select_surface_owner(
-        windows,
-        crate::AdapterError::new(
-            crate::ErrorCode::WindowNotFound,
-            format!(
-                "No window found to identify the application owning surface '{}'",
-                surface.as_str()
-            ),
-        ),
-    )
-}
-
-/// Whether the surface names OS chrome rather than a window's own sub-surface:
-/// the kinds an adapter may resolve directly, with no owning application and
-/// no window in the inventory. Derived from the [`SnapshotSurface`] variant
-/// alone - never from a platform check - so the seam stays platform-neutral.
-fn is_shell_surface(surface: crate::SnapshotSurface) -> bool {
-    matches!(
-        surface,
-        crate::SnapshotSurface::StartMenu
-            | crate::SnapshotSurface::Taskbar
-            | crate::SnapshotSurface::SystemTray
-            | crate::SnapshotSurface::SystemTrayOverflow
-            | crate::SnapshotSurface::ActionCenter
-            | crate::SnapshotSurface::QuickSettings
-            | crate::SnapshotSurface::Dock
-            | crate::SnapshotSurface::MenuBarExtras
-    )
-}
-
-/// Surfaces a background app with no window still presents, read from its
-/// process; the owner then carries an empty window id.
-fn is_process_surface(surface: crate::SnapshotSurface) -> bool {
-    matches!(
-        surface,
-        crate::SnapshotSurface::Window
-            | crate::SnapshotSurface::Menubar
-            | crate::SnapshotSurface::MenuBarExtras
-    )
-}
-
-fn select_app_window(windows: Vec<WindowInfo>, app: &str) -> Result<WindowInfo, AppError> {
-    crate::system::window_lookup::select_window(
-        windows,
-        crate::AdapterError::app_has_no_window(app),
-        "More than one window matches the target",
-    )
+    surface_target::resolve_window_for_surface(adapter, app_name, window_id, surface, deadline)
 }
 
 pub(crate) fn surface_windows(
@@ -188,66 +116,7 @@ pub(crate) fn surface_windows(
     surface: crate::SnapshotSurface,
     deadline: crate::Deadline,
 ) -> Result<Vec<WindowInfo>, AppError> {
-    use crate::SnapshotSurface::{Alert, Popover, Sheet};
-    if window_id.is_none() && matches!(surface, Sheet | Popover | Alert) {
-        let mut windows = match app_name {
-            Some(_) => windows_for_app(adapter, app_name, deadline)?,
-            None => frontmost_process_windows(adapter, surface, deadline)?,
-        };
-        windows.retain(|window| window.state.accessible);
-        let windows = crate::system::window_lookup::surface_owner_order(windows);
-        if !windows.is_empty() {
-            return Ok(windows);
-        }
-    }
-    Ok(vec![resolve_window_for_surface(
-        adapter, app_name, window_id, surface, deadline,
-    )?])
-}
-
-fn frontmost_process_windows(
-    adapter: &dyn PlatformAdapter,
-    surface: crate::SnapshotSurface,
-    deadline: crate::Deadline,
-) -> Result<Vec<WindowInfo>, AppError> {
-    let owner = resolve_window_for_surface(adapter, None, None, surface, deadline)?;
-    let mut windows = windows_for_app(adapter, Some(owner.app.as_str()), deadline)?;
-    windows.retain(|window| window.pid == owner.pid);
-    if windows.is_empty() {
-        windows.push(owner);
-    }
-    Ok(windows)
-}
-
-pub(crate) fn first_surface_owner<T>(
-    windows: Vec<WindowInfo>,
-    mut observe: impl FnMut(&WindowInfo) -> Result<T, AppError>,
-) -> Result<(WindowInfo, T), AppError> {
-    let mut windows = windows.into_iter().peekable();
-    while let Some(window) = windows.next() {
-        match observe(&window) {
-            Err(AppError::Adapter(error))
-                if error.code == crate::ErrorCode::ElementNotFound && windows.peek().is_some() => {}
-            result => return result.map(|observed| (window, observed)),
-        }
-    }
-    Err(
-        crate::AdapterError::new(crate::ErrorCode::WindowNotFound, "No window to observe")
-            .unsent()
-            .into(),
-    )
-}
-
-fn windows_for_app(
-    adapter: &dyn PlatformAdapter,
-    app_name: Option<&str>,
-    deadline: crate::Deadline,
-) -> Result<Vec<WindowInfo>, AppError> {
-    let filter = WindowFilter {
-        focused_only: app_name.is_none(),
-        app: app_name.map(str::to_string),
-    };
-    Ok(adapter.list_windows(&filter, deadline)?)
+    surface_target::surface_windows(adapter, app_name, window_id, surface, deadline)
 }
 
 pub(crate) fn resolve_window(
@@ -256,42 +125,7 @@ pub(crate) fn resolve_window(
     window_id: Option<&str>,
     deadline: crate::Deadline,
 ) -> Result<WindowInfo, AppError> {
-    let filter = WindowFilter {
-        focused_only: app_name.is_none() && window_id.is_none(),
-        app: app_name.map(str::to_string),
-    };
-
-    let windows = adapter.list_windows(&filter, deadline)?;
-
-    if let Some(wid) = window_id {
-        windows.into_iter().find(|w| w.id == wid).ok_or_else(|| {
-            AppError::Adapter(
-                crate::AdapterError::new(
-                    crate::ErrorCode::WindowNotFound,
-                    format!("No window with id {wid}"),
-                )
-                .with_suggestion("Run 'list-windows' to see available window IDs.")
-                .unsent(),
-            )
-        })
-    } else if let Some(app) = app_name {
-        if windows.is_empty() {
-            if let Err(AppError::Adapter(error)) =
-                crate::system::app_lookup::resolve_app(Some(app), adapter, deadline)
-            {
-                if error.code == crate::ErrorCode::AppNotFound {
-                    return Err(AppError::Adapter(error));
-                }
-            }
-        }
-        select_app_window(windows, app)
-    } else {
-        crate::system::window_lookup::select_window(
-            windows,
-            crate::AdapterError::new(crate::ErrorCode::WindowNotFound, "No focused window found"),
-            "More than one window matches the target",
-        )
-    }
+    surface_target::resolve_window(adapter, app_name, window_id, deadline)
 }
 
 #[cfg(test)]
@@ -345,7 +179,7 @@ pub fn run_with_context(
         crate::Deadline::after(timeout_ms)?,
     )?;
     let store = RefStore::for_session(context.session_id())?;
-    let snapshot_id = store.save_new_snapshot(&result.refmap)?;
+    let snapshot_id = result.save_refmap(&store)?;
     trace_artifacts::copy_refmap_if_full(context, &store, &snapshot_id, &result.refmap)?;
     result.bind_snapshot_id(snapshot_id);
     emit_snapshot_saved(context, &result)?;
@@ -361,8 +195,8 @@ pub(crate) fn emit_snapshot_saved(
             "snapshot_id": result.snapshot_id,
             "ref_count": result.refmap.len(),
         });
-        if !result.window.app.is_empty() {
-            fields["app"] = json!(result.window.app);
+        if !result.owner.app_name().is_empty() {
+            fields["app"] = json!(result.owner.app_name());
         }
         if let Some(reason) = &result.identity_unproven {
             fields["identity_unproven"] = json!(reason);
@@ -372,8 +206,11 @@ pub(crate) fn emit_snapshot_saved(
 }
 
 pub mod hints;
-pub mod snapshot_ref;
+pub(crate) mod ref_owner_observation;
+pub(crate) mod snapshot_owner;
+pub(crate) mod snapshot_ref;
 pub mod snapshot_surface;
+pub(crate) mod surface_target;
 #[cfg(test)]
 #[path = "snapshot_tests.rs"]
 mod tests;
@@ -390,6 +227,10 @@ mod tokenless_capture_tests;
 #[cfg(test)]
 #[path = "tokenless_drill_tests.rs"]
 mod tokenless_drill_tests;
+
+#[cfg(test)]
+#[path = "snapshot_deadline_tests.rs"]
+mod deadline_tests;
 
 #[cfg(test)]
 #[path = "snapshot_window_tests.rs"]

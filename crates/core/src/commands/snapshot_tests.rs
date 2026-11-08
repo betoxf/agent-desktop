@@ -359,7 +359,7 @@ fn an_unproven_capture_is_flagged_in_the_payload() {
     let mut result = crate::snapshot::SnapshotResult {
         tree: crate::adapter::minimal_accessibility_node("window", "Fixture"),
         refmap: crate::RefMap::new(),
-        window: WindowInfo {
+        owner: crate::SnapshotOwner::Window(WindowInfo {
             id: "w-1".into(),
             title: "Fixture".into(),
             app: "Fixture".into(),
@@ -367,7 +367,7 @@ fn an_unproven_capture_is_flagged_in_the_payload() {
             process_instance: None,
             bounds: None,
             state: crate::WindowState::default(),
-        },
+        }),
         snapshot_id: None,
         complete: true,
         nodes_observed: 1,
@@ -376,7 +376,10 @@ fn an_unproven_capture_is_flagged_in_the_payload() {
     let proven = format_snapshot_fields(&result, None, None).unwrap();
     assert!(proven.get("identity_unproven").is_none());
     assert_eq!(proven["window"]["id"], "w-1");
-    result.window.id.clear();
+    let crate::SnapshotOwner::Window(window) = &mut result.owner else {
+        panic!("expected a window owner");
+    };
+    window.id.clear();
     assert!(
         format_snapshot_fields(&result, None, None)
             .unwrap()

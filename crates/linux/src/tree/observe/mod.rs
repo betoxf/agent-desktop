@@ -34,6 +34,9 @@ fn refuse_stopped(
 
 fn root_element(root: &ObservationRoot<'_>) -> Result<AtspiElement, AdapterError> {
     match root {
+        ObservationRoot::Application { .. } => {
+            Err(AdapterError::not_supported("application observation root"))
+        }
         ObservationRoot::Window(window) if window.is_process_owner() => {
             Err(AdapterError::app_has_no_window(&window.app))
         }

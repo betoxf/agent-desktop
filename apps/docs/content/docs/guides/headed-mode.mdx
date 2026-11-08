@@ -16,8 +16,8 @@ A result shows which mechanism ran: in `data.steps`, `semantic_api` is an access
 
 `--headed` authorizes the focus and cursor side effects an action declares:
 
-- For a ref, core focuses the exact source window first, and pointer actions need a verified target point. On macOS, a ref from a background app (a menu bar app, the Dock, a system panel) or a status item has no window to focus; the click still needs a verified target point.
-- Raw coordinates (`--xy`) carry no window identity, so they never focus anything.
+- For a ref, core focuses the exact source window before headed pointer input and verifies the target point before delivery. A process-owned ref has no window to focus, but physical input still requires a verified point.
+- On macOS, clicking a native menu-bar item uses `AXPress`; it works headless and does not move the pointer under `--headed`. A headless `right-click` can use `AXShowMenu` when the target provides it.- Raw coordinates (`--xy`) carry no window identity, so they never focus anything.
 - It applies to every entry of a [batch](/desktop/guides/batch).
 - It permits physical input; it does not force it. Each platform decides per action whether to use a physical or a semantic path, and `check`, `set-value`, and `expand` stay semantic under `--headed` everywhere.
 - It does not lift other guards. A blocked key combo still needs `--force`, and a platform that cannot deliver physical input, such as pointer input on Wayland, still refuses.

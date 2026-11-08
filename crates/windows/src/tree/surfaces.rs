@@ -23,6 +23,9 @@ pub(crate) fn surface_root(
     deadline: Deadline,
 ) -> Result<UIAElement, AdapterError> {
     match (root, surface) {
+        (ObservationRoot::Application { .. }, _) => {
+            Err(AdapterError::not_supported("application observation root"))
+        }
         (ObservationRoot::Window(window), _) if window.is_process_owner() => {
             Err(AdapterError::app_has_no_window(&window.app))
         }

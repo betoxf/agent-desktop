@@ -100,6 +100,7 @@ impl Tool {
         self.command.get_arguments().filter(|arg| {
             !arg.is_global_set()
                 && !arg.is_hide_set()
+                && arg.get_id().as_str() != "stdin"
                 && !matches!(
                     arg.get_action(),
                     ArgAction::Help

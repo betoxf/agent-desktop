@@ -147,7 +147,7 @@ fn flag_shaped_values_stay_values_and_never_become_flags() {
     let Some(crate::cli::Commands::Type(typed)) = cli.command else {
         panic!("type");
     };
-    assert_eq!(typed.text, hostile);
+    assert_eq!(typed.text.as_deref(), Some(hostile));
 }
 
 #[test]
@@ -166,5 +166,23 @@ fn global_flags_cannot_be_set_per_call() {
         arguments.insert(global.into(), Value::from("x"));
         let error = tool.argv(&arguments).expect_err(global);
         assert!(error.contains("Unknown argument"), "{global}: {error}");
+    }
+}
+
+#[test]
+fn stdin_input_is_not_exposed_to_mcp_calls() {
+    for path in [["type"], ["set-value"], ["clipboard-set"]] {
+        let tool = tool_at(&path);
+        assert!(
+            tool.definition()["inputSchema"]["properties"]
+                .get("stdin")
+                .is_none()
+        );
+        let arguments = Map::from_iter([("stdin".into(), Value::Bool(true))]);
+        assert!(
+            tool.argv(&arguments)
+                .unwrap_err()
+                .contains("Unknown argument 'stdin'")
+        );
     }
 }

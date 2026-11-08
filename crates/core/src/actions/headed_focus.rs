@@ -11,27 +11,41 @@ pub(crate) fn focus_entry_window(
     context: &crate::CommandContext,
     lease: &crate::InteractionLease,
 ) -> Result<bool, AppError> {
-    let process_instance = required_text(
-        entry.process.process_instance.as_deref(),
-        "Headed input requires target process-instance identity",
-    )?;
+    entry.process.identity().ok_or_else(|| {
+        AdapterError::new(
+            ErrorCode::ActionNotSupported,
+            "Headed input requires target process-instance identity",
+        )
+        .with_details(json!({ "physical_delivery_started": false }))
+    })?;
     if entry.source.is_process_owned() {
         return Ok(false);
     }
+    let expected = adapter.resolve_ref_focus_window(entry, lease.deadline())?;
+    focus_exact_window(&expected, adapter, context, lease).map(|_| true)
+}
+
+pub fn saved_ref_focus_window(entry: &crate::RefEntry) -> Result<WindowInfo, AdapterError> {
+    let process = entry.process.identity().ok_or_else(|| {
+        AdapterError::new(
+            ErrorCode::ActionNotSupported,
+            "Headed input requires target process-instance identity",
+        )
+        .with_details(json!({ "physical_delivery_started": false }))
+    })?;
     let window_id = required_text(
         entry.source.source_window_id.as_deref(),
         "Headed input requires an exact source window id",
     )?;
-    let expected = WindowInfo {
+    Ok(WindowInfo {
         id: window_id.to_string(),
         title: entry.source.source_window_title.clone().unwrap_or_default(),
         app: entry.source.source_app.clone().unwrap_or_default(),
-        pid: entry.process.pid,
-        process_instance: Some(process_instance.to_string()),
+        pid: process.pid,
+        process_instance: Some(process.instance),
         bounds: None,
         state: crate::WindowState::default(),
-    };
-    focus_exact_window(&expected, adapter, context, lease).map(|_| true)
+    })
 }
 
 pub(crate) fn focus_process_window(
@@ -69,10 +83,13 @@ pub(crate) fn focus_exact_window(
     Ok(live)
 }
 
-fn required_text<'a>(value: Option<&'a str>, message: &str) -> Result<&'a str, AppError> {
+fn required_text<'a>(value: Option<&'a str>, message: &str) -> Result<&'a str, AdapterError> {
     value.filter(|value| !value.is_empty()).ok_or_else(|| {
         AdapterError::new(ErrorCode::ActionNotSupported, message)
             .with_details(json!({ "physical_delivery_started": false }))
-            .into()
     })
 }
+
+#[cfg(test)]
+#[path = "headed_focus_tests.rs"]
+mod tests;

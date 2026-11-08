@@ -39,7 +39,7 @@ The grant belongs to the app that launched agent-desktop, not to the shell. A di
 
 ## What works headless
 
-Ref actions are headless by default. Under `--headed`, `click`, `right-click`, `type`, `clear`, and `scroll` become physical first: core focuses the exact window, then a real click, key, or wheel event goes to the verified point. `expand`, `collapse`, `set-value`, `select`, `toggle`, `check`, `uncheck`, `focus`, and `scroll-to` stay semantic. See [Headed mode](/desktop/guides/headed-mode).
+Ref actions are headless by default. Under `--headed`, `click`, `right-click`, `type`, `clear`, and `scroll` use physical paths first, except a click on an item in the application's native menu bar hierarchy: agent-desktop activates the owning app and calls `AXPress` without moving the cursor. A headless click on these menu items calls `AXPress` without activating the app. `right-click` can use `AXShowMenu` headless when the item provides it. Under `--headed`, right-click, double-click, and triple-click support windowless native menu items by focusing the app and keeping pointer verification. `hover` and `drag` still require the ref's source window and fail with `ACTION_NOT_SUPPORTED` when it has none. Other ref-target pointer actions focus the exact owning window and verify the hit target before delivery. A window-backed popup uses its live owning window even when its snapshot is application-owned. `expand`, `collapse`, `set-value`, `select`, `toggle`, `check`, `uncheck`, `focus`, and `scroll-to` stay semantic. See [Headed mode](/desktop/guides/headed-mode).
 
 <table>
   <thead>
@@ -69,8 +69,7 @@ Judge delivery by observation. AX return codes do not prove an effect: an app ca
 
 ## Surfaces
 
-`supported_surfaces` lists `window`, `focused`, `menu`, `menubar`, `sheet`, `popover`, `alert`, `dock`, and `menu-bar-extras`. Use `--surface menubar` for an app's File, Edit, and View menus. Use `--surface menu-bar-extras` for status items: without `--app` it reads the system items (Wi-Fi, Battery, Clock), and with `--app` it reads that app's own item. `--surface dock` reads the Dock. A background app with no window, such as the Control Center panel after you click its status item, is read through its process with `snapshot --app "Control Center"`; [Surfaces](/desktop/surfaces) has the rules. Notification Center is reached through the notification commands. See [Surfaces](/desktop/surfaces).
-
+`supported_surfaces` lists `window`, `focused`, `menu`, `menubar`, `sheet`, `popover`, `alert`, `dock`, and `menu-bar-extras`. Use `--surface menubar` for an app's File, Edit, and View menus. Use `--surface menu-bar-extras` for status items: without `--app` it reads system items such as Wi-Fi, Battery, and Clock; with `--app` it reads that app's own item. Use `--surface dock` for the Dock. These shell surfaces are available headless through `open-system-surface`. A background app with no window, such as a menu-bar app or Control Center, can be read through its process. This applies to `window`, `menubar`, and `menu-bar-extras`, not `focused`; a regular app that has not shown a window returns `WINDOW_NOT_FOUND`. While a menu, sheet, alert, or popover is open, refs from the window tree behind it are the wrong target. See [Surfaces](/desktop/surfaces).
 ## Keys and notifications
 
 - The primary modifier is `cmd`: `press cmd+c`. Punctuation keys work as the symbol or by name (`comma`, `period`, `slash`).
@@ -94,7 +93,7 @@ agent-desktop turns on web accessibility in a Chromium renderer when it needs it
     <tr><td><code>complete: false</code> or a slow snapshot</td><td>A deep tree ran out of budget</td><td>Use <code>find</code>, or a skeleton and <code>--root</code>. See <a href="/desktop/skeleton-and-drill-down">Skeleton and drill-down</a></td></tr>
     <tr><td><code>APP_UNRESPONSIVE</code> after <code>right-click</code> with <code>retry: unsafe</code></td><td><code>AXShowMenu</code> entered modal menu tracking after the menu opened</td><td>Do not retry. Run <code>snapshot --surface menu</code>; for a combo box or menu button, use <code>select</code></td></tr>
     <tr><td><code>select</code> cannot confirm the choice</td><td>It needs a closed-to-open menu change, and a menu was already open</td><td>Dismiss the open menu, then run <code>select</code> again</td></tr>
-    <tr><td><code>WINDOW_NOT_FOUND</code></td><td>The app has no open window</td><td><code>launch "App"</code> with <code>--activate</code>, then <code>list-windows --app "App"</code></td></tr>
+    <tr><td><code>WINDOW_NOT_FOUND</code></td><td>A window-owned surface has no open window</td><td><code>launch "App"</code> with <code>--activate</code>, then <code>list-windows --app "App"</code></td></tr>
     <tr><td>A shortcut does nothing</td><td><code>ctrl</code> used where macOS uses <code>cmd</code>, or the keys went to another app</td><td>Use <code>cmd+...</code>, or scope with <code>--app</code></td></tr>
   </tbody>
 </table>

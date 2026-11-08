@@ -1,5 +1,5 @@
 use crate::{
-    AccessibilityNode, AppError, WindowInfo,
+    AccessibilityNode, AppError, SnapshotOwner, WindowInfo,
     adapter::{PlatformAdapter, TreeOptions},
     context::CommandContext,
     locator::live_locator::{ObservationRequest, ObservationRoot},
@@ -83,10 +83,7 @@ pub fn run_from_ref_with_context(
     } = capture;
     let capture_proof =
         crate::refs::ref_capture_proof::CaptureProof::new(&observed).rooted_at(&path_prefix);
-
-    let source_app = entry.source.source_app.as_deref();
-    let source_window_id = entry.source.source_window_id.as_deref();
-    let source_window_title = entry.source.source_window_title.as_deref();
+    let owner = resolve_result_owner(&entry, &window, adapter)?;
     let config = RefAllocConfig {
         options: RefAllocOptions {
             include_bounds: opts.include_bounds,
@@ -96,9 +93,9 @@ pub fn run_from_ref_with_context(
         },
         source: RefAllocSource {
             pid: entry.process.pid,
-            app: source_app,
-            window_id: source_window_id,
-            window_title: source_window_title,
+            app: entry.source.source_app.as_deref(),
+            window_id: entry.source.source_window_id.as_deref(),
+            window_title: entry.source.source_window_title.as_deref(),
             window_bounds_hash: entry.source.source_window_bounds_hash,
             process_instance: entry.process.process_instance.as_deref(),
             surface: entry.source.source_surface,
@@ -139,12 +136,26 @@ pub fn run_from_ref_with_context(
     Ok(SnapshotResult {
         tree,
         refmap,
-        window,
+        owner,
         snapshot_id: Some(active_snapshot_id),
         complete: true,
         nodes_observed,
         identity_unproven: None,
     })
+}
+
+fn resolve_result_owner(
+    entry: &crate::refs::RefEntry,
+    window: &WindowInfo,
+    adapter: &dyn PlatformAdapter,
+) -> Result<SnapshotOwner, AppError> {
+    if adapter.is_application_surface(entry.source.source_surface) {
+        let app = super::surface_target::application_from_ref(entry)?;
+        crate::system::app_lookup::process_identity(&app)?;
+        Ok(SnapshotOwner::Application(app))
+    } else {
+        Ok(SnapshotOwner::Window(window.clone()))
+    }
 }
 
 fn drill_capture(

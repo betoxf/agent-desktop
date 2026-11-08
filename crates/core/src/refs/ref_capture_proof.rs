@@ -31,8 +31,10 @@ pub(crate) struct CaptureProof<'a> {
 
 impl<'a> CaptureProof<'a> {
     pub(crate) fn new(observed: &'a ObservedTree) -> Self {
-        let whole_window =
-            matches!(observed.source, ObservationSource::Window { .. }) && observed.is_exhaustive();
+        let whole_window = matches!(
+            observed.source,
+            ObservationSource::Window { .. } | ObservationSource::Application { .. }
+        ) && observed.is_exhaustive();
         Self {
             observed,
             whole_window,

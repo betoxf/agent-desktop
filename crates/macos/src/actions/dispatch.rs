@@ -31,14 +31,12 @@ mod imp {
         tracing::debug!("action: perform {label}");
         match action {
             Action::Click => {
-                let role = if request.policy.is_headed() {
-                    probe_click_role(el, deadline)?
-                } else {
-                    None
-                };
+                let native_menu = crate::tree::native_menu::is_native_menu(el, deadline)?
+                    || (request.policy.is_headed()
+                        && probe_click_role(el, deadline)?.as_deref() == Some("AXMenuBarItem"));
                 steps.extend(run_chain(
                     el,
-                    chain_defs::click_chain(role.as_deref()),
+                    chain_defs::click_chain(native_menu),
                     None,
                     request,
                     deadline,

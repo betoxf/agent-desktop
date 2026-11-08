@@ -27,7 +27,7 @@ fn test_run_from_ref_resolves_source_window_among_same_process_windows() {
 
     let result = run_from_ref(&adapter, &drill_opts(), "@e1", Some(&snapshot_id))
         .expect("drill must resolve its own source window, not the process");
-    assert_eq!(result.window.id, "w-467");
+    assert_eq!(result.owner.window().unwrap().id, "w-467");
 }
 
 #[test]
@@ -72,11 +72,11 @@ fn test_run_from_ref_drills_a_ref_captured_from_a_windowless_app() {
         let deadline = crate::Deadline::after(1000).unwrap();
         let captured =
             crate::snapshot::build(&windowless, &opts, Some("TestApp"), None, deadline).unwrap();
-        assert!(captured.window.is_process_owner(), "{surface:?}");
+        assert!(captured.owner.window().is_none(), "{surface:?}");
         let snapshot_id = save_latest(captured.refmap);
         let adapter =
             StubAdapter::with_windows(named("button", "Dock"), vec![window_info("w-9", true)]);
         let result = run_from_ref(&adapter, &drill_opts(), "@e1", Some(&snapshot_id)).unwrap();
-        assert!(result.window.is_process_owner(), "{surface:?}");
+        assert!(result.owner.window().is_none(), "{surface:?}");
     }
 }

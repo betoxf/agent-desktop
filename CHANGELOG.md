@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.2.0](https://github.com/vercel-labs/agent-desktop/compare/v1.1.0...v1.2.0) (2026-11-05)
+
+### Features
+
+* Add `agent-desktop mcp`, a Model Context Protocol server over stdio that exposes each leaf CLI command as a tool. Tool names and argument schemas come from the CLI definitions, and calls return the command's JSON envelope. ([#519](https://github.com/vercel-labs/agent-desktop/pull/519))
+* Accept `--stdin` for `type`, `set-value`, and `clipboard-set` to read UTF-8 text from a pipe or redirected file instead of a command-line argument. ([#373](https://github.com/vercel-labs/agent-desktop/pull/373))
+* On macOS, expose and select list rows whose selection can only be changed through their container. ([#503](https://github.com/vercel-labs/agent-desktop/pull/503))
+
+### Bug Fixes
+
+* Preserve partial snapshots and matched wait results when the observation deadline expires instead of failing while saving their refs. ([#372](https://github.com/vercel-labs/agent-desktop/pull/372))
+* On macOS, ignore exited apps in the workspace inventory instead of failing app discovery. ([#371](https://github.com/vercel-labs/agent-desktop/pull/371))
+* On macOS, draw the cursor overlay above menus and system panels. ([#511](https://github.com/vercel-labs/agent-desktop/pull/511))
+* On macOS, start the cursor overlay outside the caller's working directory so the overlay does not keep that directory in use. ([#381](https://github.com/vercel-labs/agent-desktop/pull/381))
+
+### Documentation
+
+* Document installation from Homebrew's default catalog with `brew install agent-desktop`. ([#524](https://github.com/vercel-labs/agent-desktop/pull/524))
+
 ## [1.1.0](https://github.com/vercel-labs/agent-desktop/compare/v1.0.2...v1.1.0) (2026-11-02)
 
 ### ⚠ BREAKING CHANGES

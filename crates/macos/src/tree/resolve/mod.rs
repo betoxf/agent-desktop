@@ -22,12 +22,14 @@ pub(crate) fn resolve_element_with_deadline(
     entry: &RefEntry,
     operation_deadline: agent_desktop_core::Deadline,
 ) -> Result<NativeHandle, AdapterError> {
-    verify_process_instance(entry)?;
+    let identity = verify_process_instance(entry)?;
     if element_token(entry).is_none() {
         return Err(element_token_required(entry));
     }
     let deadline = crate::tree::locator_deadline::from_operation(operation_deadline)?;
-    let result = retry_incomplete_until(deadline, || resolve_token_once(entry, deadline));
+    let result = resolve_with_recovery(entry, identity, deadline, || {
+        resolve_token_once(entry, deadline)
+    });
     match result {
         Err(error) if error.code == ErrorCode::ElementNotFound => {
             Err(stale_ref_error(entry, &error))
@@ -41,9 +43,11 @@ pub(crate) fn resolve_locator_anchor_with_deadline(
     entry: &RefEntry,
     operation_deadline: agent_desktop_core::Deadline,
 ) -> Result<NativeHandle, AdapterError> {
-    verify_process_instance(entry)?;
+    let identity = verify_process_instance(entry)?;
     let deadline = crate::tree::locator_deadline::from_operation(operation_deadline)?;
-    let result = retry_incomplete_until(deadline, || resolve_locator_anchor_once(entry, deadline));
+    let result = resolve_with_recovery(entry, identity, deadline, || {
+        resolve_locator_anchor_once(entry, deadline)
+    });
     match result {
         Err(error) if error.code == ErrorCode::ElementNotFound => {
             Err(stale_ref_error(entry, &error))
@@ -53,7 +57,9 @@ pub(crate) fn resolve_locator_anchor_with_deadline(
 }
 
 #[cfg(target_os = "macos")]
-fn verify_process_instance(entry: &RefEntry) -> Result<(), AdapterError> {
+fn verify_process_instance(
+    entry: &RefEntry,
+) -> Result<crate::system::process::process_identity::ProcessIdentity, AdapterError> {
     let Some(instance) = entry.process.process_instance.as_deref() else {
         return Err(AdapterError::stale_ref_because(
             "Saved target has no process instance identity",
@@ -61,7 +67,13 @@ fn verify_process_instance(entry: &RefEntry) -> Result<(), AdapterError> {
     };
     let pid = crate::system::process::process_identity::to_pid_t(entry.process.pid)?;
     match crate::system::process::process_identity::matches_instance(pid, instance) {
-        Ok(true) => Ok(()),
+        Ok(true) => crate::system::process::process_identity::ProcessIdentity::capture(pid)?
+            .filter(|identity| identity.token() == instance)
+            .ok_or_else(|| {
+                AdapterError::stale_ref_because(
+                    "Saved target process instance changed during resolution",
+                )
+            }),
         Ok(false) => Err(AdapterError::stale_ref_because(
             "Saved target belongs to a process instance that is no longer running",
         )),
@@ -69,6 +81,36 @@ fn verify_process_instance(entry: &RefEntry) -> Result<(), AdapterError> {
             "Saved target carries a malformed process instance identity",
         )),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_with_recovery<T>(
+    entry: &RefEntry,
+    identity: crate::system::process::process_identity::ProcessIdentity,
+    deadline: Instant,
+    mut operation: impl FnMut() -> Result<T, AdapterError>,
+) -> Result<T, AdapterError> {
+    if matches!(
+        entry.source.source_surface,
+        SnapshotSurface::Menu | SnapshotSurface::Menubar
+    ) {
+        crate::tree::app_menu::observe(identity, deadline, operation)
+    } else {
+        retry_incomplete_until(deadline, || {
+            if !identity.still_matches()? {
+                return Err(AdapterError::stale_ref_because(
+                    "Saved target process instance changed during resolution",
+                ));
+            }
+            let result = operation();
+            if !identity.still_matches()? {
+                return Err(AdapterError::stale_ref_because(
+                    "Saved target process instance changed during resolution",
+                ));
+            }
+            result
+        })
     }
 }
 
@@ -185,7 +227,7 @@ fn finish_resolution<T>(
 }
 
 #[cfg(target_os = "macos")]
-fn retry_incomplete_until<T>(
+pub(super) fn retry_incomplete_until<T>(
     deadline: Instant,
     mut operation: impl FnMut() -> Result<T, AdapterError>,
 ) -> Result<T, AdapterError> {
