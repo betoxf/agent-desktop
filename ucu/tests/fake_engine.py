@@ -2,7 +2,8 @@
 """Stand-in for agent-desktop in tests: logs its arguments and answers like the real one, without touching any app.
 
 The window has a display and two buttons. Each click changes the display, so a look after it finds a change. A ref ending
-in e99 is stale. An app called "Slow" takes a while, and "Many" has two windows.
+in e99 is stale. An app called "Slow" takes a while, "Many" has two windows, and "Broken" answers with a snapshot ucu
+can't read.
 """
 import json
 import os
@@ -48,10 +49,12 @@ def main():
         app = arguments[arguments.index("--app") + 1]
         if "--window-id" not in arguments and app == "Many":
             reply(error={"code": "AMBIGUOUS_TARGET", "message": "Several windows match"})
+        elif app == "Broken":
+            reply("not a snapshot")
         else:
             reply(snapshot(app))
-    elif command == "list-windows":
-        reply({"windows": [{"id": "w-1", "title": "One"}, {"id": "w-2", "title": "Two"}]})
+    elif command == "list-windows":  # the real engine's data is the list itself
+        reply([{"id": "w-1", "title": "One"}, {"id": "w-2", "title": "Two"}])
     elif command == "screenshot":
         Path(arguments[1]).write_bytes(b"picture")
         reply({"format": "png", "width": 692, "height": 892, "scale_factor": 2.0, "path": arguments[1]})

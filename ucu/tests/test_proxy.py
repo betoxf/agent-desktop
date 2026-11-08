@@ -238,6 +238,19 @@ class ServerTest(unittest.TestCase):
         reply = self.server.look(app="Many", window="Three")
         self.assertIn('Windows: "One", "Two"', self.server.text(reply))
 
+    def test_acts_in_a_window_picked_by_title(self):
+        reply = self.server.call("act", app="Many", window="Two", steps=[{"do": "click", "on": 1}])
+        self.assertFalse(reply["result"]["isError"])
+        self.assertIn("+ statictext 1, Description: Display", self.server.text(reply))
+        self.assertTrue(all(call[-2:] == ["--window-id", "w-2"] for call in self.server.engine_calls("snapshot")))
+
+    def test_answers_when_ucu_itself_fails(self):
+        reply = self.server.look(app="Broken")
+        self.assertTrue(reply["result"]["isError"])
+        self.assertIn("ucu hit a bug", self.server.text(reply))
+        self.assertIn("in render", self.server.text(reply))
+        self.assertIn("button Add", self.server.text(self.server.look()))
+
     def test_gives_the_chat_an_engine_session_of_its_own_and_ends_it(self):
         self.server.look()
         lines = [json.loads(line) for line in self.server.engine_log.read_text().splitlines()]

@@ -45,6 +45,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import unicodedata
 import uuid
 from pathlib import Path
@@ -87,6 +88,8 @@ SHARED_NOTE = ("[ucu: Another agent ({}) is using {}. Two agents on one app undo
 FOCUS_NOTE = ("[ucu: {} came to the front during your actions, so ucu put {} back. Check that the app did what you "
               "meant.]")
 STALE_NOTE = "Numbers change with the window: call look and use the new number."
+BUG_NOTE = ("ucu hit a bug and stopped this call ({}). An action may already have happened: check the app before "
+            "repeating it, and tell the user.")
 WINDOW_ADVICE = {"sheet": "It is part of its window, so look shows it.",
                  "system dialog": "It may need the user; you can't count on reaching it.",
                  "main": "It is the app's main window now, so look shows it.",
@@ -223,6 +226,13 @@ def log_approval(asker, app, action):
             handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {asker} {word} {app}\n")
     except OSError:
         pass
+
+
+def bug_report(error):
+    """What the agent reads when ucu itself fails: the error and where in this file, so the bug can be found."""
+    frames = [frame for frame in traceback.extract_tb(error.__traceback__) if frame.filename == __file__]
+    where = f" at line {frames[-1].lineno}, in {frames[-1].name}" if frames else ""
+    return BUG_NOTE.format(f"{type(error).__name__}: {error}{where}")
 
 
 def encode(message):
@@ -785,6 +795,8 @@ class Server:
             content, failed = self.run_tool(name, arguments), False
         except (ToolError, RuntimeError) as error:
             content, failed = [{"type": "text", "text": str(error)}], True
+        except Exception as error:  # a bug must still answer, or the client waits for its tool timeout
+            content, failed = [{"type": "text", "text": bug_report(error)}], True
         content += [{"type": "text", "text": note} for note in self.finish(started, name in ("look", "act"))]
         self.write({"id": request_id, "result": {"content": content, "isError": failed}})
 
@@ -922,7 +934,7 @@ class Server:
     # --- look and act -----------------------------------------------------
     @staticmethod
     def window_id(app, title):
-        windows = (Engine.run("list-windows", "--app", app).get("windows") or [])
+        windows = Engine.run("list-windows", "--app", app) or []  # the engine's data is the list itself
         if not title:
             return windows[0]["id"] if windows else None
         found = [window for window in windows if title.casefold() in str(window.get("title")).casefold()]
