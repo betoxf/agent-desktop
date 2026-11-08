@@ -3,6 +3,7 @@
 claude, swiftc and cargo are fakes in $HOME/.local/bin, which ucu searches first, so nothing outside the
 temporary HOME is touched, and the real engine in target/release is only copied if it is there.
 """
+import fcntl
 import json
 import os
 import shutil
@@ -59,8 +60,13 @@ class CliTest(unittest.TestCase):
             path.write_text(f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n" + body)
             path.chmod(0o755)
         self.env = {**os.environ, "HOME": str(self.home), "PATH": f"{bin_dir}:/usr/bin:/bin",
-                    "CARGO_TARGET_DIR": str(self.home / "target")}
+                    "CARGO_TARGET_DIR": str(self.home / "target"), "GIT_AUTHOR_NAME": "Test",
+                    "GIT_AUTHOR_EMAIL": "test@example.com", "GIT_COMMITTER_NAME": "Test",
+                    "GIT_COMMITTER_EMAIL": "test@example.com"}
         self.assertEqual(shutil.which("claude", path=self.env["PATH"]), str(bin_dir / "claude"))
+        self.updates_off = self.home / "Library/Application Support/ucu/no-auto-update"
+        self.updates_off.parent.mkdir(parents=True)
+        self.updates_off.touch()  # the servers that install and doctor start would update the clone tests run from
 
         (self.home / ".claude.json").write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}, "numStartups": 3}))
         (self.home / ".claude").mkdir()
@@ -143,11 +149,104 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.ucu("denied")[1].strip(), "Messages")
 
     def test_deny_keeps_a_broken_policy_as_it_was(self):
-        (self.home / POLICY).parent.mkdir(parents=True)
         (self.home / POLICY).write_text("{")
         code, output = self.ucu("deny", "Mail")
         self.assertEqual(code, 1, output)
         self.assertEqual((self.home / POLICY).read_text(), "{")
+
+    # --- update: a throwaway repository with a copy of ucu/ and a stand-in for the engine's code, and a clone of it
+    def git(self, folder, *args):
+        result = subprocess.run(["git", "-C", str(folder), *args], capture_output=True, text=True, env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def clone(self):
+        origin = self.home / "origin"
+        shutil.copytree(ROOT, origin / "ucu", ignore=shutil.ignore_patterns("tests", "__pycache__", "assets", "benchmarks"))
+        (origin / "Cargo.toml").write_text("[workspace]\n")
+        self.git(origin, "init", "-q", "-b", "ucu")
+        self.git(origin, "add", "-A")
+        self.git(origin, "commit", "-q", "-m", "first")
+        self.git(self.home, "clone", "-q", str(origin), "clone")
+        return origin, self.home / "clone"
+
+    def commit(self, folder, path, text):
+        (folder / path).write_text(text)
+        self.git(folder, "commit", "-q", "-am", f"change {path}")
+
+    def update(self, clone, *args):
+        result = subprocess.run([sys.executable, str(clone / "ucu/ucu"), "update", *args], capture_output=True,
+                                text=True, env=self.env)
+        return result.returncode, result.stdout + result.stderr
+
+    def same(self, origin, clone):
+        return self.git(origin, "rev-parse", "HEAD") == self.git(clone, "rev-parse", "HEAD")
+
+    def test_update_fast_forwards_and_rebuilds_only_what_changed(self):
+        origin, clone = self.clone()
+        engine, helper = self.home / ".local/bin/ucu-engine", self.home / ".local/bin/ucu-window"
+        self.assertEqual(self.update(clone), (0, "✓ ucu is up to date\n"))
+
+        self.commit(origin, "ucu/README.md", "new words\n")
+        code, output = self.update(clone)
+        self.assertEqual(code, 0, output)
+        self.assertTrue(self.same(origin, clone))
+        self.assertFalse(engine.exists() or helper.exists(), output)  # only ucu/ changed: nothing to build
+
+        self.commit(origin, "Cargo.toml", "[workspace]\nmembers = []\n")
+        self.commit(origin, "ucu/native/ucu-window.swift", "// new\n")
+        code, output = self.update(clone)
+        self.assertEqual(code, 0, output)
+        self.assertTrue(self.same(origin, clone))
+        self.assertTrue(engine.exists() and helper.exists(), output)
+
+    def test_update_leaves_local_changes_and_commits_alone(self):
+        origin, clone = self.clone()
+        self.commit(origin, "ucu/README.md", "theirs\n")
+        (clone / "ucu/README.md").write_text("mine\n")
+        code, output = self.update(clone)
+        self.assertEqual(code, 1, output)
+        self.assertIn("this clone has local changes, so it was left as it is", output)
+        self.commit(clone, "ucu/README.md", "mine\n")
+        code, output = self.update(clone)
+        self.assertEqual(code, 1, output)
+        self.assertIn("this clone has commits that origin/ucu doesn't", output)
+        self.assertEqual((clone / "ucu/README.md").read_text(), "mine\n")
+
+    def test_update_goes_back_when_the_engine_does_not_build(self):
+        origin, clone = self.clone()
+        before = self.git(clone, "rev-parse", "HEAD")
+        (self.home / "no-rust").touch()
+        self.commit(origin, "Cargo.toml", "[workspace]\nmembers = []\n")
+        code, output = self.update(clone)
+        self.assertEqual(code, 1, output)
+        self.assertIn("went back to the version before the update", output)
+        self.assertEqual(self.git(clone, "rev-parse", "HEAD"), before)
+        self.assertEqual(self.git(clone, "status", "--porcelain", "--untracked-files=no"), "")
+
+    def test_chats_update_one_at_a_time_and_at_most_every_ten_minutes(self):
+        origin, clone = self.clone()
+        state = self.home / "Library/Application Support/ucu"
+        self.updates_off.unlink()
+        self.commit(origin, "ucu/README.md", "one\n")
+        self.assertEqual(self.update(clone, "--auto"), (0, ""))
+        self.assertTrue(self.same(origin, clone))
+        self.assertIn("✓ updated to", (self.home / "Library/Logs/ucu/update.log").read_text())
+
+        self.commit(origin, "ucu/README.md", "two\n")
+        self.update(clone, "--auto")  # the last check was just now
+        self.assertFalse(self.same(origin, clone))
+        os.utime(state / "update-checked", (0, 0))
+        with (state / "update.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # another chat is updating
+            self.update(clone, "--auto")
+        self.assertFalse(self.same(origin, clone))
+        self.updates_off.touch()
+        self.update(clone, "--auto")
+        self.assertFalse(self.same(origin, clone))
+        self.updates_off.unlink()
+        self.update(clone, "--auto")
+        self.assertTrue(self.same(origin, clone))
 
     def test_install_changes_nothing_when_the_engine_does_not_build(self):
         (self.home / "no-rust").touch()

@@ -3,6 +3,7 @@
 
   ucu install [--python PATH]   register ucu, its Stop hook and approval policy
   ucu uninstall                 remove them
+  ucu update [--auto]           bring this clone up to date and rebuild what changed
   ucu doctor                    check that everything is in place and that the server starts
   ucu deny APP                  stop agents using an app
   ucu allow APP                 let agents use an app again
@@ -15,8 +16,14 @@ ucu-window to ~/.local/bin/ucu-window.
 
 install backs up what it changes outside this repo to
 ~/Library/Application Support/ucu/backups/<time>/ first.
+
+ucu keeps itself up to date: each chat's server runs `ucu update --auto` as it starts, which looks for new commits on
+the branch this clone follows at most every 10 minutes, one chat at a time, and logs to ~/Library/Logs/ucu/update.log.
+It leaves a clone with local changes or commits of its own alone, and undoes an update whose engine doesn't build. The
+file ~/Library/Application Support/ucu/no-auto-update turns it off.
 """
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
@@ -38,6 +45,12 @@ CLAUDE_CONFIG = HOME / ".claude.json"
 SETTINGS = HOME / ".claude/settings.json"
 BACKUPS = HOME / "Library/Application Support/ucu/backups"
 OPENCODE_CONFIG = HOME / ".config/opencode/opencode.json"
+UPDATES_OFF = HOME / "Library/Application Support/ucu/no-auto-update"
+UPDATE_LOCK = HOME / "Library/Application Support/ucu/update.lock"
+UPDATE_CHECKED = HOME / "Library/Application Support/ucu/update-checked"
+UPDATE_LOG = HOME / "Library/Logs/ucu/update.log"
+UPDATE_EVERY = 600            # seconds between the checks that chats start
+UPDATE_LOG_LIMIT = 1_000_000  # bytes; the log then moves to update.log.1 and starts again
 SEARCH_PATH = os.pathsep.join(
     [str(HOME / ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", os.environ.get("PATH", ""), "/usr/bin", "/bin"]
 )
@@ -327,6 +340,103 @@ def uninstall():
     return 0
 
 
+# --- update -------------------------------------------------------------------
+def git(*args):
+    """Run git in this clone. It never asks for a password, and one that can't run or answer in time has failed."""
+    try:
+        return subprocess.run([tool("git") or "git", "-C", str(WORKSPACE), *args], capture_output=True, text=True,
+                              timeout=120, stdin=subprocess.DEVNULL, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return subprocess.CompletedProcess(args, 1, "", str(error))
+
+
+def update_blocker():
+    """Return why this clone can't update itself, or None."""
+    upstream = git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if upstream.returncode != 0:
+        return "this clone isn't on a branch that follows a remote one"
+    if git("status", "--porcelain", "--untracked-files=no").stdout.strip():
+        return "this clone has local changes"
+    if git("rev-list", "--count", "@{u}..HEAD").stdout.strip() not in ("", "0"):
+        return f"this clone has commits that {upstream.stdout.strip()} doesn't"
+    return None
+
+
+def pull():
+    """Fast-forward this clone to the branch it follows. Return the commit it was on, or None if it didn't move."""
+    blocker = update_blocker()
+    if blocker:
+        fail(f"{blocker}, so it was left as it is")
+    fetched = git("fetch", "--quiet")
+    if fetched.returncode != 0:
+        fail(f"could not fetch: {fetched.stderr.strip()[-300:]}")
+    old = git("rev-parse", "HEAD").stdout.strip()
+    if old == git("rev-parse", "@{u}").stdout.strip():
+        say("✓", "ucu is up to date")
+        return None
+    merged = git("merge", "--ff-only", "--quiet", "@{u}")
+    if merged.returncode != 0:  # the branch it follows was rewritten
+        fail(f"could not fast-forward: {(merged.stderr or merged.stdout).strip()[-300:]}")
+    say("✓", "updated to " + git("log", "-1", "--format=%h %s").stdout.strip())
+    return old
+
+
+def log_to(path):
+    """Send what this run says to a log, since nobody is watching it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size > UPDATE_LOG_LIMIT:
+        path.replace(path.with_name(path.name + ".1"))
+    handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(handle, 1)
+    os.dup2(handle, 2)
+    os.close(handle)
+    print(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "checking for an update")
+
+
+def update(auto):
+    """Bring this clone up to date, then let the updated copy of this file rebuild what changed. With `auto`, only
+    when no other chat is updating, the last check is UPDATE_EVERY seconds old, and updates aren't turned off."""
+    if auto and UPDATES_OFF.exists():
+        return 0
+    UPDATE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with UPDATE_LOCK.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | (fcntl.LOCK_NB if auto else 0))
+        except BlockingIOError:
+            return 0  # another chat is updating
+        if auto:
+            try:
+                if time.time() - UPDATE_CHECKED.stat().st_mtime < UPDATE_EVERY:
+                    return 0
+            except FileNotFoundError:
+                pass
+            UPDATE_CHECKED.touch()
+            log_to(UPDATE_LOG)
+        old = pull()
+        if old is None:
+            return 0
+        sys.stdout.flush()
+        # The new version finishes the update, so whatever it builds or sets up happens now and not one update later.
+        return subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), "update", "--since", old]).returncode
+
+
+def finish_update(since):
+    """Rebuild what changed since the commit `since`. An engine that doesn't build undoes the update, so that the
+    server and the engine stay from the same version and the next check tries again."""
+    changed = git("diff", "--name-only", since, "HEAD").stdout.split()
+    if any(not path.startswith("ucu/") and not path.endswith(".md") for path in changed):
+        failure = build_engine()
+        if failure:
+            undone = git("reset", "--keep", since).returncode == 0
+            fail(f"{failure}; " + ("went back to the version before the update" if undone
+                                   else f"and could not go back to {since[:8]}, the version before the update"))
+        say("✓", f"rebuilt the engine at {proxy.ENGINE}")
+    if "ucu/native/ucu-window.swift" in changed:
+        build_window_helper()
+    say("✓", "new chats use the new version; open ones keep theirs until they restart")
+    return 0
+
+
 # --- doctor -------------------------------------------------------------------
 def doctor():
     failures = 0
@@ -348,6 +458,13 @@ def doctor():
         check(result.returncode == 0, f"the engine {proxy.ENGINE} runs", (result.stderr or result.stdout).strip()[:200])
     else:
         check(False, f"{proxy.ENGINE} is built", "run `ucu install` (needs Rust)")
+    blocker = update_blocker()
+    if UPDATES_OFF.exists():
+        say("!", f"ucu doesn't update itself: {UPDATES_OFF} turns it off")
+    elif blocker:
+        say("!", f"ucu doesn't update itself: {blocker}")
+    else:
+        say("✓", "ucu updates itself from " + git("rev-parse", "--abbrev-ref", "@{u}").stdout.strip())
     if entry:
         failure = handshake({"type": "stdio", **entry})
         check(failure is None, "the server answers an MCP initialize", failure)
@@ -388,6 +505,10 @@ def main():
     install_parser.add_argument("--python", default=sys.executable,
                                 help="interpreter for the server (default: the one running ucu)")
     commands.add_parser("uninstall", help="remove ucu")
+    update_parser = commands.add_parser("update", help="bring this clone up to date and rebuild what changed")
+    update_parser.add_argument("--auto", action="store_true",
+                               help="what each chat's server runs: at most every 10 minutes, logged, one at a time")
+    update_parser.add_argument("--since", help=argparse.SUPPRESS)  # the updated copy finishing an update
     commands.add_parser("doctor", help="check the installation")
     commands.add_parser("deny", help="stop agents using an app").add_argument("app", help='for example "Mail"')
     commands.add_parser("allow", help="let agents use an app again").add_argument("app")
@@ -397,6 +518,8 @@ def main():
         return install(args.python)
     if args.command == "uninstall":
         return uninstall()
+    if args.command == "update":
+        return finish_update(args.since) if args.since else update(args.auto)
     if args.command in ("deny", "allow"):
         return set_denied(args.app, args.command == "deny")
     if args.command == "denied":

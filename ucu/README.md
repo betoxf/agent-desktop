@@ -68,9 +68,10 @@ cd agent-desktop/ucu
 ./ucu doctor
 ```
 
-UCU runs from this folder, so keep it. Start a new Claude Code session to pick it up; open sessions need a restart. If
-`doctor` reports a problem, it says what to do next. The app that runs Claude Code, such as Terminal, needs Accessibility
-permission in **System Settings > Privacy & Security > Accessibility**, and Screen Recording for screenshots.
+UCU runs from this folder, so keep it, and it updates itself from there (see [Update](#update)). Start a new Claude Code
+session to pick it up; open sessions need a restart. If `doctor` reports a problem, it says what to do next. The app that
+runs Claude Code, such as Terminal, needs Accessibility permission in **System Settings > Privacy & Security >
+Accessibility**, and Screen Recording for screenshots.
 
 `./ucu install` backs up what it changes to `~/Library/Application Support/ucu/backups/<time>/`, then:
 
@@ -207,12 +208,16 @@ Without the `Stop` hook, a turn ends after 2 minutes without a call.
 
 ## Update
 
-```bash
-git pull
-./ucu install
-```
+UCU keeps itself up to date. As a chat starts, its server looks for new commits on the branch this clone follows, at most
+every 10 minutes and in the background. It fast-forwards the clone and rebuilds the engine or `ucu-window` when their
+code changed, and the next chat runs the new version. It leaves a clone with local changes or commits of its own alone,
+and undoes an update whose engine doesn't build. What it did is in `~/Library/Logs/ucu/update.log`.
 
-Then start a new session.
+To update now, run `./ucu update`. To stop updating by itself:
+
+```bash
+touch ~/Library/Application\ Support/ucu/no-auto-update
+```
 
 ## Uninstall
 
@@ -227,7 +232,7 @@ This removes the server, hook, engine and `ucu-window`. Your policy, logs and ba
 
 | Path | What it does |
 | --- | --- |
-| `ucu` | The `install`, `uninstall`, `doctor`, `deny`, `allow` and `denied` commands. |
+| `ucu` | The `install`, `uninstall`, `update`, `doctor`, `deny`, `allow` and `denied` commands. |
 | `scripts/ucu-proxy.py` | The MCP server. It runs the engine, keeps the deny list, renders windows as short text and adds notes. |
 | `native/ucu-window.swift` | `ucu-window list/focus` and `ucu-window watch`, which opens apps hidden, reports new windows, holds the private desktop and draws each chat's cursor. |
 | `native/safari.js` | The Safari side of the `safari` tool, run with `osascript`. |

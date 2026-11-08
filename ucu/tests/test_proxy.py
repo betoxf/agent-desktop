@@ -49,6 +49,9 @@ class Proxy:
                "FAKE_SAFARI_STATE": str(Path(self.home.name) / "safari.json"), "PATH": f"{tools}:{os.environ['PATH']}"}
         folder = Path(self.home.name) / "My Project"
         folder.mkdir()
+        updates_off = Path(self.home.name) / "Library/Application Support/ucu/no-auto-update"
+        updates_off.parent.mkdir(parents=True)
+        updates_off.touch()  # or the server would update the clone these tests run from
         self.process = subprocess.Popen([sys.executable, "-I", str(PROXY), "--stop-grace", "0"],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, cwd=folder)
         self.messages = queue.Queue()

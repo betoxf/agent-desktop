@@ -24,6 +24,8 @@ server runs it once per action, and adds what makes it fit for working next to a
 * notes on what the agent wouldn't see: new windows, sheets and system dialogs, and the macOS alert sound, which the
   server hears in the system sound server's log. It needs no permission and hears no audio;
 * the usage rules in the `instructions` of the `initialize` reply, so they reach every client;
+* updates: as it starts, it runs `ucu update --auto` in the background, which brings this clone up to date at most every
+  10 minutes and rebuilds what changed. The next chat runs the new version;
 * stops `ucu-window watch` and the log stream once the chat has not used them for --stop-grace seconds after a turn
   ended (default 120), or --stop-idle seconds in any case (default 900). The Stop hook that `ucu install` adds sends
   SIGINFO when Claude's turn ends (`pkill -INFO -P $PPID -f ucu-proxy.py`), and without one a turn ends after
@@ -1132,12 +1134,24 @@ class Server:
         return 0
 
 
+def check_for_update():
+    """Let `ucu update --auto` bring ucu up to date in the background, out of this chat's way."""
+    try:
+        process = subprocess.Popen([sys.executable, "-I", str(REPO / "ucu"), "update", "--auto"],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
+    except OSError:
+        return
+    threading.Thread(target=process.wait, daemon=True).start()  # collects it when it ends
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--turn-idle", type=float, default=120)
     parser.add_argument("--stop-grace", type=float, default=120)
     parser.add_argument("--stop-idle", type=float, default=900)
     args = parser.parse_args()
+    check_for_update()
     code = Server(args.turn_idle, args.stop_grace, args.stop_idle).run()
     # Skip interpreter shutdown: the from_client thread is usually still blocked reading stdin,
     # and finalizing sys.stdin under it aborts with "Fatal Python error: _enter_buffered_busy"
