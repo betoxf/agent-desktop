@@ -79,7 +79,35 @@ class WatchTest(unittest.TestCase):
         proxy.policy(deny=["Terminal"])
         reply = proxy.look("Closed App")
         self.assertEqual(proxy.commands("open")[0]["deny"], ["Terminal"])
-        self.assertIn("Closed App was closed, so ucu opened it hidden", proxy.notes(reply)[0])
+        self.assertIn("Closed App was closed, so ucu opened it on your private desktop", proxy.notes(reply)[0])
+        self.assertEqual((proxy.commands("park")[0]["park"], proxy.commands("park")[0]["onlyHidden"]),
+                         (["Closed App"], True))
+
+    def test_keeps_an_app_it_opens_hidden_without_a_desktop(self):
+        proxy = WatchingProxy(self)
+        self.assertIn("Closed Stuck was closed, so ucu opened it hidden", proxy.notes(proxy.look("Closed Stuck"))[0])
+
+    def test_runs_a_shortcut_through_the_menu(self):
+        proxy = WatchingProxy(self)
+        proxy.look()
+        result = proxy.act({"do": "click", "on": 1}, {"do": "press", "keys": "cmd+k"}, {"do": "click", "on": 1})
+        self.assertFalse(result["result"]["isError"], proxy.text(result))
+        self.assertEqual(proxy.commands("args")[0]["args"], ["press", "Calculator", "cmd+k"])
+        self.assertEqual([entry["command"] for entry in proxy.batched()], ["click", "click"])
+
+    def test_sends_keys_for_a_shortcut_no_menu_has(self):
+        proxy = WatchingProxy(self)
+        proxy.look("Missing")
+        result = proxy.act({"do": "press", "keys": "cmd+j"}, app="Missing")
+        self.assertFalse(result["result"]["isError"], proxy.text(result))
+        self.assertEqual(proxy.batched()[0], {"command": "press", "args": {"combo": "cmd+j", "app": "Missing"}})
+
+    def test_says_when_neither_the_menu_nor_keys_take_a_shortcut(self):
+        proxy = WatchingProxy(self)
+        proxy.look("Missing")
+        result = proxy.act({"do": "press", "keys": "cmd+k"}, app="Missing")
+        self.assertTrue(result["result"]["isError"])
+        self.assertIn("Step 1 failed", proxy.text(result))
 
     def test_never_watches_or_opens_a_denied_app(self):
         proxy = WatchingProxy(self)
@@ -226,7 +254,9 @@ class SharedMacTest(unittest.TestCase):
         proxy = WatchingProxy(self)
         color = self.cursor_color(proxy)
         self.assertRegex(color, r"^#[0-9A-F]{6}$")
-        self.assertIn("cursor", json.loads(proxy.window_log.read_text().splitlines()[0]))
+        first = json.loads(proxy.window_log.read_text().splitlines()[0])
+        self.assertIn("cursor", first)
+        self.assertEqual(first["who"], "test-client:My-Project")
         files = list((Path(proxy.home.name) / "Library/Application Support/ucu/sessions").glob("*.json"))
         self.assertEqual(json.loads(files[0].read_text())["color"], color)
 
@@ -449,6 +479,31 @@ class ChromeTest(unittest.TestCase):
         notes = proxy.notes(proxy.look())
         self.assertEqual(len(notes), 1)
         self.assertIn("Sign in", notes[0])
+
+    def test_brings_its_tab_to_the_user_who_asked_and_lets_them_keep_it(self):
+        proxy = WatchingProxy(self)
+        proxy.chrome(op="open", url="https://a.test")
+        self.assertFalse(proxy.chrome(op="show")["isError"])
+        self.assertEqual(proxy.chrome_calls("show_to_user")[0]["window_id"], 901)
+        self.assertIn("Google Chrome", [command["allow"] for command in proxy.commands("allow")])
+        self.assertIn("call `open` first", proxy.chrome(op="read")["content"][0]["text"])
+        proxy.process.stdin.close()
+        proxy.process.wait(10)
+        self.assertEqual(proxy.chrome_calls("close_window"), [])  # the user's window now
+
+    def test_shows_only_its_own_tab(self):
+        proxy = WatchingProxy(self)
+        self.assertTrue(proxy.chrome(op="show", window_id=61, tab_index=1)["isError"])
+        self.assertEqual(proxy.chrome_calls("show_to_user"), [])
+
+    def test_leaves_its_window_with_the_user_once_it_left_the_desktop(self):
+        proxy = WatchingProxy(self)
+        proxy.chrome(op="open", url="https://a.test")
+        (Path(proxy.home.name) / "window-moved").touch()
+        proxy.end_turn()
+        proxy.wait_until(lambda: proxy.chrome_calls("hide_window"))
+        self.assertEqual(proxy.chrome_calls("hide_window")[0]["only_at"]["x"], -1900)
+        proxy.wait_until(lambda: "call `open` first" in proxy.chrome(op="read")["content"][0]["text"])
 
     def test_doesnt_tell_the_agent_about_the_window_it_just_made(self):
         proxy = WatchingProxy(self)

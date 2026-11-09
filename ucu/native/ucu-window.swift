@@ -6,11 +6,14 @@
 //   ucu-window list [app]
 //   ucu-window focus <app> <title substring> [--unfullscreen] [--activate]
 //   ucu-window unfullscreen <app> <title substring>
+//   ucu-window press <app> <shortcut such as cmd+shift+t>
 //   ucu-window watch
 //
 // <app> is a display name or bundle id of a running app; `list` without one covers every app.
 // `focus` un-minimizes the window and makes it the app's main window; it shows the app and brings
-// it to the front only with --activate. `watch` is what the server runs next to the engine: see Watcher.
+// it to the front only with --activate, onto the user's screen if it was out of sight. `press` runs
+// the menu command a shortcut stands for, which works on an app in the background, even a hidden
+// one. `watch` is what the server runs next to the engine: see Watcher.
 // Needs Accessibility permission for the process that runs it (Claude Code).
 // Build: `ucu install` (swiftc -O native/ucu-window.swift -o ~/.local/bin/ucu-window)
 import AppKit
@@ -467,6 +470,7 @@ final class AgentCursor {
 //   {"busy": true}                                      an agent's call began (false: it ended)
 //   {"allow": "Blender"}                                bring this app back and let it come to the front just now
 //   {"ours": "Google Chrome"}                           the agent is about to bring this app forward: always undo it
+//   {"who": "claude-code:my-project"}                   the chat, for the focus log
 //   {"cursor": "#E5484D"}                               draw the agent's cursor in this color
 //   {"cursorTo": [640, 480]}                            move the cursor to this place on screen
 //   {"turnEnded": true}                                 the turn ended, so the cursor can go
@@ -501,6 +505,11 @@ final class Watcher {
     var allowed: pid_t?
     var allowedUntil = Date.distantPast
     var oursUntil = [pid_t: Date]()  // until when an app comes forward because of the agent, whatever the user does
+    // Apps ucu opened for the agent, which stay out of the user's sight, on the desktop or else hidden, until the user
+    // takes one: they can't come forward at any time while the chat runs.
+    var launchedHidden = Set<pid_t>()
+    var observers = [pid_t: AXObserver]()  // new windows of parked apps, which join the others on the desktop
+    var who = "?"
 
     func run() -> Never {
         signal(SIGPIPE, SIG_IGN)
@@ -512,7 +521,11 @@ final class Watcher {
             }
         }
         on(NSWorkspace.didActivateApplicationNotification) { [self] in activated($0) }
-        on(NSWorkspace.didTerminateApplicationNotification) { [self] in seenWindows[$0.processIdentifier] = nil }
+        on(NSWorkspace.didTerminateApplicationNotification) { [self] in
+            seenWindows[$0.processIdentifier] = nil
+            stopWatchingWindows(of: $0.processIdentifier)
+            launchedHidden.remove($0.processIdentifier)
+        }
         scanDialogs(reporting: false)
         Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [self] _ in
             if Date() < busyUntil { scan() }
@@ -565,6 +578,7 @@ final class Watcher {
 
     func handle(_ command: [String: Any]) {
         if let hex = command["cursor"] as? String { cursor.color = color(hex) }
+        if let name = command["who"] as? String { who = name.split(separator: " ").joined(separator: "-") }
         if command["turnEnded"] != nil { cursor.rest() }
         if let point = command["cursorTo"] as? [Double], point.count == 2 {
             driven = watched.compactMap(running)
@@ -582,6 +596,7 @@ final class Watcher {
             allowedUntil = Date() + Self.allowGrace  // only for the call that asked: later it can't come forward again
             keptHidden.remove(app.processIdentifier)
             bringBack(app)
+            log("\(app.localizedName ?? "?") came to the user at the agent's request")
         }
         if let busy = command["busy"] as? Bool {
             busyUntil = Date() + (busy ? Self.longestCall : Self.quietTail)  // no end comes if the server crashes
@@ -653,7 +668,10 @@ final class Watcher {
         configuration.addsToRecentItems = false
         configuration.promptsUserIfNeeded = false
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in
-            DispatchQueue.main.async { [self] in keepHidden(app, id: id, state: state, limit: limit) }
+            DispatchQueue.main.async { [self] in
+                if let app { launchedHidden.insert(app.processIdentifier) }
+                keepHidden(app, id: id, state: state, limit: limit)
+            }
         }
     }
 
@@ -694,6 +712,7 @@ final class Watcher {
         let apps = names.compactMap(running)
         for app in apps {
             keptHidden.remove(app.processIdentifier)
+            launchedHidden.remove(app.processIdentifier)
             if app.isHidden { app.unhide() }
         }
         let started = Date()
@@ -756,6 +775,7 @@ final class Watcher {
                 move(window, to: target)
             }
             parked[app.processIdentifier] = (app, places, target)
+            watchNewWindows(of: app)
             targets.append((app, target))
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + (moved ? Self.moveSettle : 0)) {
@@ -782,8 +802,57 @@ final class Watcher {
         }
     }
 
+    // An app opens a new window where it likes, often on the user's screen, so a new window of a parked app joins the
+    // others on the desktop as soon as it exists, and again once the app has placed it. Where the app put it is where
+    // it goes when the user takes the app back.
+    func watchNewWindows(of app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        guard observers[pid] == nil else { return }
+        var made: AXObserver?
+        let callback: AXObserverCallback = { _, element, _, context in
+            guard let context else { return }
+            Unmanaged<Watcher>.fromOpaque(context).takeUnretainedValue().windowCreated(element)
+        }
+        guard AXObserverCreate(pid, callback, &made) == .success, let observer = made else { return }
+        AXObserverAddNotification(observer, appElement(pid), kAXWindowCreatedNotification as CFString,
+                                  Unmanaged.passUnretained(self).toOpaque())
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        observers[pid] = observer
+    }
+
+    func stopWatchingWindows(of pid: pid_t) {
+        guard let observer = observers.removeValue(forKey: pid) else { return }
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+    }
+
+    func windowCreated(_ window: AXUIElement) {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(window, &pid) == .success, parked[pid] != nil else { return }
+        keepOnDesktop(window, of: pid)
+        for delay in [0.05, 0.3] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in keepOnDesktop(window, of: pid) }
+        }
+    }
+
+    // As in moveToDesktop, the app hides while its window moves, so the window goes at once instead of sliding across
+    // the user's screen.
+    func keepOnDesktop(_ window: AXUIElement, of pid: pid_t) {
+        guard let place = parked[pid], !Self.isOutOfSight(window) else { return }
+        var origin = CGPoint.zero
+        if let value: AXValue = attribute(window, kAXPositionAttribute) { AXValueGetValue(value, .cgPoint, &origin) }
+        if !place.places.contains(where: { CFEqual($0.0, window) }) { parked[pid]?.places.append((window, origin)) }
+        place.app.hide()
+        move(window, to: place.target)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.moveSettle) { [self] in
+            if parked[pid] != nil, place.app.isHidden { place.app.unhide() }
+        }
+        log("a new window of \(place.app.localizedName ?? "?") joined it on the agent's desktop")
+    }
+
     func bringBack(_ app: NSRunningApplication) {
+        launchedHidden.remove(app.processIdentifier)
         guard let place = parked.removeValue(forKey: app.processIdentifier) else { return }
+        stopWatchingWindows(of: app.processIdentifier)
         place.places.forEach { move($0.0, to: $0.1) }
         let opened: [AXUIElement] = attribute(appElement(app.processIdentifier), kAXWindowsAttribute) ?? []
         for window in opened where !place.places.contains(where: { CFEqual($0.0, window) }) {
@@ -900,42 +969,82 @@ final class Watcher {
 
     func activated(_ app: NSRunningApplication) {
         let previous = front, pid = app.processIdentifier, launched = app.launchDate ?? .distantPast
-        let isNew = launched > busySince, ours = Date() < oursUntil[pid] ?? .distantPast
+        let isNew = launched > busySince && Date() < busyUntil  // started during the call that is running
+        let ours = Date() < oursUntil[pid] ?? .distantPast
+        let owned = launchedHidden.contains(pid), name = app.localizedName ?? "?"
         front = app
         if !ours, Self.userSwitched() { bringBack(app) }  // they clicked its Dock icon: its windows can't stay hidden
         guard let previous, previous.processIdentifier != pid, !previous.isTerminated,
               !(pid == allowed && Date() < allowedUntil) else { return }
+        let over = "\(name) came forward over \(previous.localizedName ?? "?")"
         // A new app is held back while a call runs, unless the user did anything since just before it started.
         if isNew {
-            guard Date() < busyUntil, !Self.userIsActive(within: -launched.timeIntervalSinceNow + Self.inputWindow)
-            else { return }
-            putBack(previous, over: app)
-            keepHidden(app, id: nil)
+            guard !Self.userIsActive(within: -launched.timeIntervalSinceNow + Self.inputWindow) else {
+                return log("\(over) as it started: left in front, as the user may have opened it")
+            }
+            putBack(previous, over: app, why: "it started while the agent worked")
+            if parked[pid] == nil { keepHidden(app, id: nil) }
             return
         }
-        // An app this chat drives can't come forward by itself while the chat works and for a while after. When the
-        // agent is bringing it forward, the user's clicks have nothing to do with it. The user's app must still be in
-        // sight: if it isn't, they went to another Space themselves.
-        guard Date() < guardUntil, driven.contains(app) || ours, ours || !Self.userSwitched(), !previous.isHidden,
-              Self.isOnScreen(previous) else { return }
-        putBack(previous, over: app, ours: ours)
+        // An app this chat drives can't come forward by itself while the chat works and for a while after, nor one ucu
+        // opened, whose place is out of sight, while the chat runs. When the agent is bringing it forward, the user's
+        // clicks have nothing to do with it. The user's app must still be in sight: if it isn't, they went to another
+        // Space themselves.
+        guard (Date() < guardUntil && driven.contains(app)) || owned || ours else { return }
+        if !ours, Self.userSwitched() { return log("\(over): left in front, as the user clicked or switched apps") }
+        if previous.isHidden || !Self.isOnScreen(previous) {
+            return log("\(over): left in front, as the user's app was out of sight")
+        }
+        putBack(previous, over: app, ours: ours, why: ours ? "the agent's step brought it" : "it came by itself")
+        if owned, parked[pid] == nil { app.hide() }  // without a desktop, ucu's app goes back into hiding
     }
 
     // The user's app comes back to the front. Asking it can fail while it is busy, so it is asked again.
-    func putBack(_ previous: NSRunningApplication, over app: NSRunningApplication, ours: Bool = false,
+    func putBack(_ previous: NSRunningApplication, over app: NSRunningApplication, ours: Bool = false, why: String,
                  tries: Int = putBackTries) {
         front = previous
         AXUIElementSetAttributeValue(appElement(previous.processIdentifier), kAXFrontmostAttribute as CFString,
                                      kCFBooleanTrue)
         if tries == Self.putBackTries {
             emit(["event": "focus", "app": app.localizedName ?? "?", "back": previous.localizedName ?? "?"])
+            log("\(app.localizedName ?? "?") came forward over \(previous.localizedName ?? "?"), as \(why): put back")
         }
         guard tries > 1 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.putBackCheck) { [self] in
             let stays = NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
-            if stays, ours || !Self.userSwitched() { putBack(previous, over: app, ours: ours, tries: tries - 1) }
+            guard stays, ours || !Self.userSwitched() else { return }
+            if tries == 2 { log("\(app.localizedName ?? "?") stayed in front after ucu asked twice: asking once more") }
+            putBack(previous, over: app, ours: ours, why: why, tries: tries - 1)
         }
     }
+
+    // A line in ~/Library/Logs/ucu/focus.log, so that "an app took my focus" can be checked. It names apps, never
+    // window titles, and only those this chat drives.
+    func log(_ text: String) {
+        let path = NSHomeDirectory() + "/Library/Logs/ucu/focus.log", files = FileManager.default
+        try? files.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                   withIntermediateDirectories: true)
+        if let size = (try? files.attributesOfItem(atPath: path))?[.size] as? Int, size > Self.logLimit {
+            try? files.removeItem(atPath: path + ".1")
+            try? files.moveItem(atPath: path, toPath: path + ".1")
+        }
+        let line = Data("\(Self.stamp.string(from: Date())) \(who) \(text)\n".utf8)
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(line)
+            try? handle.close()
+        } else {
+            files.createFile(atPath: path, contents: line)
+        }
+    }
+
+    static let logLimit = 1_000_000
+    static let stamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter
+    }()
 
     // In an app this chat drives, a window out of sight can become the main one, such as the agent's browser window on
     // its desktop when it shows or opens a popup. In the app the user is in, their typing would go there; in another,
@@ -957,6 +1066,7 @@ final class Watcher {
             let inSight = windows.first { !Self.isOutOfSight($0) && !flag($0, kAXMinimizedAttribute) }
             guard !(isFront && Self.userSwitched()), let theirs = known ?? inSight else { continue }
             AXUIElementSetAttributeValue(theirs, kAXMainAttribute as CFString, kCFBooleanTrue)
+            log("\(app.localizedName ?? "?") made a window out of sight its main one: the user's window got it back")
             guard isFront else { continue }  // nobody was typing: nothing to tell
             AXUIElementPerformAction(theirs, kAXRaiseAction as CFString)
             emit(["event": "focus", "app": app.localizedName ?? "?", "back": title(theirs), "window": true])
@@ -973,11 +1083,57 @@ final class Watcher {
     }
 }
 
+// Where a window goes when the user asked to see it and it was on an agent's desktop: the screen with the menu bar.
+func bringIntoSight(_ window: AXUIElement) {
+    guard let screen = NSScreen.screens.first else { return }
+    let area = screen.visibleFrame, top = screen.frame.height - area.maxY  // windows count from the top, screens up
+    var point = CGPoint(x: area.minX + 40, y: top + 40)
+    if let value = AXValueCreate(.cgPoint, &point) {
+        AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
+    }
+}
+
+// The menu item a shortcut such as "cmd+shift+t" stands for, and its menu path. Menus give their shortcut's key as a
+// character, or as a key code for keys such as Return, and their modifiers as bits: 1 Shift, 2 Option, 4 Control, and
+// 8 when Command isn't one of them.
+func menuItem(for shortcut: String, in element: AXUIElement) -> (AXUIElement, String)? {
+    let parts = shortcut.lowercased().split(separator: "+").map(String.init)
+    guard let key = parts.last, !key.isEmpty, let bar: AXUIElement = attribute(element, kAXMenuBarAttribute) else {
+        return nil
+    }
+    let held = Set(parts.dropLast())
+    let bits = (held.contains("shift") ? 1 : 0) | (held.isDisjoint(with: ["alt", "option", "opt"]) ? 0 : 2)
+        | (held.isDisjoint(with: ["ctrl", "control"]) ? 0 : 4)
+        | (held.isDisjoint(with: ["cmd", "command", "meta"]) ? 8 : 0)
+    let codes = ["return": 36, "enter": 76, "tab": 48, "space": 49, "delete": 51, "backspace": 51, "escape": 53,
+                 "esc": 53, "left": 123, "right": 124, "down": 125, "up": 126, "home": 115, "end": 119, "pageup": 116,
+                 "pagedown": 121, "forwarddelete": 117, "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97,
+                 "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111]
+    var queue: [(AXUIElement, String)] = [(bar, "")], visited = 0
+    while visited < queue.count, visited < 4000 {
+        let (node, path) = queue[visited]
+        visited += 1
+        let name: String = attribute(node, kAXTitleAttribute) ?? ""
+        let here = name.isEmpty ? path : (path.isEmpty ? name : "\(path) > \(name)")
+        if (attribute(node, kAXRoleAttribute) as String?) == kAXMenuItemRole,
+           (attribute(node, kAXMenuItemCmdModifiersAttribute) as Int?) ?? 0 == bits,
+           (attribute(node, kAXEnabledAttribute) as Bool?) ?? false {
+            let char: String? = attribute(node, kAXMenuItemCmdCharAttribute)
+            let code: Int? = attribute(node, kAXMenuItemCmdVirtualKeyAttribute)
+            if char.map({ $0.lowercased() == key }) ?? false || (codes[key] != nil && code == codes[key]) {
+                return (node, here)
+            }
+        }
+        queue += (attribute(node, kAXChildrenAttribute) as [AXUIElement]? ?? []).map { ($0, here) }
+    }
+    return nil
+}
+
 let watcher = Watcher()
 let args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
     fail("usage: ucu-window list [app] | focus <app> <title> [--unfullscreen] [--activate] | "
-        + "unfullscreen <app> <title> | watch")
+        + "unfullscreen <app> <title> | press <app> <shortcut> | watch")
 }
 if command == "watch" { watcher.run() }
 if command == "list", args.count == 1 {
@@ -1005,6 +1161,7 @@ case "focus", "unfullscreen":
         }
         AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
         if args.contains("--activate") {
+            if Watcher.isOutOfSight(window) { bringIntoSight(window) }  // the user asked to see it
             AXUIElementPerformAction(window, kAXRaiseAction as CFString)
             app.unhide()
             app.activate()
@@ -1014,6 +1171,14 @@ case "focus", "unfullscreen":
     let isMain = isMain(window, of: element)
     print("\"\(title(window))\" main=\(isMain) fullscreen=\(flag(window, "AXFullScreen")) frame=\(frame(window))")
     exit(command == "focus" && !isMain ? 4 : 0)
+case "press":
+    guard args.count >= 3 else { fail("usage: ucu-window press <app> <shortcut>") }
+    guard let (item, path) = menuItem(for: args[2], in: element) else {
+        fail("No menu item of \(app.localizedName ?? "the app") has the shortcut \(args[2]).", 2)
+    }
+    let pressed = AXUIElementPerformAction(item, kAXPressAction as CFString)
+    guard pressed == .success else { fail("\(path) didn't take the press (\(pressed.rawValue)).", 5) }
+    print("pressed \(path)")
 default:
     fail("unknown command \(command)")
 }

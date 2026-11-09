@@ -49,6 +49,7 @@ UPDATES_OFF = HOME / "Library/Application Support/ucu/no-auto-update"
 UPDATE_LOCK = HOME / "Library/Application Support/ucu/update.lock"
 UPDATE_CHECKED = HOME / "Library/Application Support/ucu/update-checked"
 UPDATE_LOG = HOME / "Library/Logs/ucu/update.log"
+FOCUS_LOG = HOME / "Library/Logs/ucu/focus.log"  # ucu-window's account of apps that came forward during agent work
 UPDATE_EVERY = 600            # seconds between the checks that chats start
 UPDATE_LOG_LIMIT = 1_000_000  # bytes; the log then moves to update.log.1 and starts again
 SEARCH_PATH = os.pathsep.join(
@@ -438,6 +439,28 @@ def finish_update(since):
 
 
 # --- doctor -------------------------------------------------------------------
+def focus_report(hours=24):
+    """What the focus log says about the last day, as a doctor line, or None when there is no log yet."""
+    try:
+        lines = FOCUS_LOG.read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    since = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - hours * 3600))
+    came = [line for line in lines if line[:19] >= since and " came forward over " in line]
+    if not came:
+        return "✓", "no app came forward during agent work in the last day"
+    back = sum(line.endswith(": put back") for line in came)
+
+    def times(count):
+        return "once" if count == 1 else f"{count} times"
+    message = (f"in the last day, apps came forward {times(len(came))} during agent work, and ucu gave the user's app "
+               f"back {times(back)}")
+    if back < len(came):
+        left = times(len(came) - back)
+        return "!", f"{message}; it left them in front {left}, as the user seemed to switch: {FOCUS_LOG}"
+    return "✓", message
+
+
 def doctor():
     failures = 0
 
@@ -488,6 +511,9 @@ def doctor():
               result.stderr.strip() + " (a usage message means it is out of date: run `ucu install`)")
     else:
         check(False, f"{proxy.WINDOW_HELPER} is built", "run `ucu install` (needs swiftc)")
+    focus = focus_report()
+    if focus:
+        say(*focus)
     if OPENCODE_CONFIG.exists():
         try:
             servers = json.loads(OPENCODE_CONFIG.read_text()).get("mcp", {})

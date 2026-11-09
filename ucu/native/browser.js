@@ -4,7 +4,7 @@
 // Nothing here activates the browser, except that Chrome comes forward when it makes a window: ucu-window puts the
 // user's app back. Operations that run in a page need Allow JavaScript from Apple Events (Safari: Develop menu; Chrome:
 // View > Developer), and every one needs Automation access to the browser.
-ObjC.import("Foundation");
+ObjC.import("AppKit");
 
 const BLANK = /^(about:blank|favorites:|chrome:\/\/newtab)/;
 const CHUNK = 1 << 20;  // characters of a file's base64 that go to a page at a time
@@ -199,9 +199,28 @@ const OPS = {
     return { shown: true };
   },
 
+  // After a turn the window goes out of sight, unless it has left the agent's desktop: then the user has it.
   hide_window(req) {
-    windowById(req.window_id).visible = false;
+    const win = windowById(req.window_id);
+    const at = win.bounds();
+    if (req.only_at && (Math.abs(at.x - req.only_at.x) > 4 || Math.abs(at.y - req.only_at.y) > 4)) {
+      return { hidden: false, moved: true };
+    }
+    win.visible = false;
     return { hidden: true };
+  },
+
+  // The user asked to see the agent's tab: its window comes to their screen, the one with the menu bar, in front.
+  show_to_user(req) {
+    const { win, tab } = tabOf(req);
+    if (B.currentIndex(win) !== req.tab_index) B.select(win, tab, req.tab_index);
+    const screen = $.NSScreen.screens.objectAtIndex(0), full = screen.frame, area = screen.visibleFrame;
+    const width = Math.min(1280, area.size.width - 80), height = Math.min(900, area.size.height - 80);
+    win.bounds = { x: area.origin.x + 40, y: full.size.height - area.origin.y - area.size.height + 40, width, height };
+    win.visible = true;
+    win.index = 1;
+    browser.activate();
+    return { shown: true };
   },
 
   // A screenshot shows a window's current tab. Only the agent's own window gets here.

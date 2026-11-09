@@ -4,7 +4,8 @@ Chrome, whichever the request names.
 
 In Safari the user has window 51 with two tabs, and is viewing the second; in Chrome, window 61 with one tab. A window
 ucu makes is 900 in Safari and 901 in Chrome. State between runs is kept in $FAKE_SAFARI_STATE. A URL containing
-"no-javascript" fails like the browser with JavaScript from Apple Events turned off.
+"no-javascript" fails like the browser with JavaScript from Apple Events turned off, and while $HOME/window-moved
+exists, ucu's window has left the agent's desktop.
 """
 import json
 import os
@@ -51,6 +52,8 @@ def answer(request, state):
         return {"changed": False}
     if op == "upload":
         return {"uploaded": [file["name"] for file in request["files"]], "into": "input"}
+    if op == "hide_window" and os.path.exists(os.path.join(os.environ["HOME"], "window-moved")):
+        return {"hidden": False, "moved": True}
     return {"op": op}
 
 

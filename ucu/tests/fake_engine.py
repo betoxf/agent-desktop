@@ -2,8 +2,8 @@
 """Stand-in for agent-desktop in tests: logs its arguments and answers like the real one, without touching any app.
 
 The window has a display and two buttons. Each click changes the display, so a look after it finds a change. A ref ending
-in e99 is stale. An app called "Slow" takes a while, "Many" has two windows, and "Broken" answers with a snapshot ucu
-can't read. Google Chrome has two windows with the same title: the user's, and one where ucu puts the agent's on the
+in e99 is stale, and pressing cmd+k fails as in a hidden app, which has no focused field. An app called "Slow" takes a
+while, "Many" has two windows, and "Broken" answers with a snapshot ucu can't read. Google Chrome has two windows with the same title: the user's, and one where ucu puts the agent's on the
 fake desktop.
 """
 import json
@@ -70,6 +70,10 @@ def main():
             if str(entry["args"].get("ref_id", "")).endswith("e99"):
                 results.append({"ok": False, "command": entry["command"],
                                 "error": {"code": "STALE_REF", "message": "That ref is stale"}})
+                break
+            if entry["command"] == "press" and entry["args"].get("combo") == "cmd+k":  # like a hidden app
+                results.append({"ok": False, "command": "press", "error": {
+                    "code": "ACTION_FAILED", "message": "Application has no verified focused element"}})
                 break
             COUNT.write_text(str(clicks() + 1))
             results.append({"ok": True, "command": entry["command"], "data": {}})

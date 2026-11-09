@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -120,6 +121,16 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("the approval policy denies 1 apps and approves every other app", output)
         self.assertNotIn("✗", output)
+
+        log = self.home / "Library/Logs/ucu/focus.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        now, old = time.strftime("%Y-%m-%d %H:%M:%S"), "2020-01-01 10:00:00"
+        put_back = "Google Chrome came forward over Mail, as it came by itself: put back"
+        log.write_text(f"{old} a:b {put_back}\n{now} a:b {put_back}\n"
+                       f"{now} a:b Blender came forward over Mail: left in front, as the user clicked\n")
+        code, output = self.ucu("doctor")
+        self.assertIn("apps came forward 2 times during agent work, and ucu gave the user's app back once; it left "
+                      "them in front once", output)
 
         code, output = self.ucu("uninstall")
         self.assertEqual(code, 0, output)

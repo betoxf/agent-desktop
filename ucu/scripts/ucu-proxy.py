@@ -87,9 +87,9 @@ SAFARI_PAINT = 0.45   # seconds Safari takes to paint a page that has been hidde
 ALERT_NOTE = ("[ucu: {} played an alert sound during your last actions, which usually means it rejected an input. "
               "Check the app before going on.]")
 DENIED = "{} is on the user's deny list, or the list can't be read. Don't switch tools; tell the user."
-OPENED_NOTE = ("[ucu: {} was closed, so ucu opened it hidden, out of the user's way. It works as usual. If the user "
-               "should see it, call list_windows, then focus_window with activate: true.]")
-REOPENED_NOTE = "[ucu: {} had no open window, so ucu opened one, hidden from the user.]"
+OPENED_NOTE = ("[ucu: {} was closed, so ucu opened it {}, out of the user's sight. It works as usual. If the user asks "
+               "to see it, call list_windows, then focus_window with activate: true.]")
+REOPENED_NOTE = "[ucu: {} had no open window, so ucu opened one {}, out of the user's sight.]"
 SHOWN_NOTE = ("[ucu: {} was hidden, and some input needs a window on screen, so ucu moved it where it can take that "
               "input without the user seeing it. Repeat the action.]")
 BROWSER_NOTE = ("[ucu: The user is working in {}, and this acts on the window they are in. Use the `{}` tool instead: "
@@ -114,9 +114,10 @@ USAGE_RULES = """ucu rules:
 - Call `look` to read an app, then `act` with numbered steps. `act` returns what changed, so don't call `look` after it.
 - Prefer numbers over positions. Use `xy` for what has no number, with pixels from a `look` screenshot.
 - With several windows, pass part of a title as `window`. Calls for different apps can run together.
-- Everything works in the background. Never bring an app to the front to make an action work, only to show the user \
-something, and never use the clipboard, which is theirs. If something can't be done in the background, ask the user.
-- ucu opens a closed app hidden, so the user isn't disturbed. Never use `open`, AppleScript or System Events on apps.
+- Everything works in the background. Bring an app to the front only when the user asks to see it or be taken \
+there (focus_window with activate, or `show` in the browser tools), never to make an action work, and never use the \
+clipboard, which is theirs. If something can't be done in the background, ask the user.
+- ucu opens a closed app out of the user's sight. Never use `open`, AppleScript or System Events on apps.
 - For Safari and Chrome, use the `safari` and `chrome` tools: they work in your own window while the user is in theirs.
 - If an action has no visible effect, stop and tell the user: remote-desktop and canvas apps can ignore background \
 input.
@@ -159,8 +160,9 @@ WINDOW_TOOLS = [
          "app": APP_PROPERTY,
          "title": {"type": "string", "description": "Part of the window's title, as list_windows shows it."},
          "unfullscreen": {"type": "boolean", "description": "Leave full screen first (default false)."},
-         "activate": {"type": "boolean", "description": "Bring the app to the front, only to show the user "
-                                                        "something: it takes their keyboard (default false)."}},
+         "activate": {"type": "boolean", "description": "Bring the window to the user's screen and the front, only "
+                                                        "when they asked to see it or be taken there (default "
+                                                        "false)."}},
          "required": ["app", "title"]}},
     {"name": "move_to_desktop",
      "description": "Move an app's windows to your private desktop, a display the user can't see. They keep working, "
@@ -176,10 +178,11 @@ WINDOW_TOOLS = [
                     "last tab. Changing a tab of the user's needs allow_user_tab, and the one they are viewing also "
                     "allow_current_tab: only if they asked. Clicks and typing are synthetic, so some logins ignore "
                     "them. `upload` puts files (`paths`) in a file input (ref, or selector, default the first) or "
-                    "drops them on an element, with no picker: confirm with the user first.",
+                    "drops them on an element, with no picker: confirm with the user first. `show` brings your tab to "
+                    "the user, only when they asked to see it; the window is theirs after that.",
      "inputSchema": {"type": "object", "required": ["op"], "properties": {
          "op": {"enum": ["list", "open", "navigate", "read", "click", "type", "wait", "eval", "upload", "shot",
-                         "close"]},
+                         "show", "close"]},
          "url": {"type": "string"}, "window_id": {"type": "integer"}, "tab_index": {"type": "integer"},
          "what": {"enum": ["text", "html", "links", "interactive"]}, "selector": {"type": "string"},
          "ref": {"type": "string"}, "text": {"type": "string"}, "clear": {"type": "boolean"},
@@ -569,6 +572,13 @@ class BrowserWorkspace:
                 result = self.call({"op": "close_tab", **target})
             elif op == "shot":
                 return self.shot(self.target(arguments))
+            elif op == "show":
+                target = self.target(arguments)
+                if target["window_id"] != self.window:
+                    raise RuntimeError("`show` brings your own tab to the user. Theirs are where they left them.")
+                self.server.windows.send({"allow": self.app})  # the user asked: it may come forward
+                result = self.call({"op": "show_to_user", **target})
+                self.window, self.tab, self.shown, self.place = None, None, False, None  # the window is theirs now
             elif op in self.OPERATIONS:
                 target = self.target(arguments)
                 if op in self.CHANGES:
@@ -604,21 +614,26 @@ class BrowserWorkspace:
         return True
 
     def hide(self):
+        """Hide the window after the turn, unless it has left the agent's desktop: then the user has it."""
         with self.lock:
             if self.shown:
                 self.shown = False
                 try:
-                    self.call({"op": "hide_window", "window_id": self.window}, timeout=15)
+                    reply = self.call({"op": "hide_window", "window_id": self.window, "only_at": self.place},
+                                      timeout=15)
                 except RuntimeError:
-                    pass
+                    return
+                if reply.get("moved"):
+                    self.window, self.tab, self.place = None, None, None
 
 
 class WindowWatcher:
     """Runs `ucu-window watch` while the chat works. Without the helper, or with one from before it could watch,
     everything here does nothing, and the agent just doesn't get what it adds."""
 
-    def __init__(self, color):
+    def __init__(self, color, who):
         self.color = color     # gives this chat's cursor color
+        self.who = who         # gives who the chat is, for the focus log
         self.process = None
         self.unusable = False  # it exited by itself, so it isn't started again
         self.lock = threading.Lock()
@@ -639,7 +654,7 @@ class WindowWatcher:
                 return
             self.desktop = None
             threading.Thread(target=self.read, args=(self.process,), daemon=True).start()
-            self.send({"cursor": self.color()})
+            self.send({"cursor": self.color(), "who": self.who()})
 
     def read(self, process):
         for line in process.stdout:
@@ -854,11 +869,12 @@ class Server:
         self.folder = working_folder()
         self.alerts = AlertWatcher()
         self.sessions = Sessions()
-        self.windows = WindowWatcher(lambda: self.sessions.cursor_color(self.folder))
+        self.windows = WindowWatcher(lambda: self.sessions.cursor_color(self.folder), self.asker)
         self.browsers = {tool: BrowserWorkspace(self, tool) for tool in BROWSERS}
         self.used_apps = set()              # apps this chat has driven, as app_key names
         self.logged_apps = set()            # apps already in the approval log for this chat
-        self.hidden_apps = {}               # apps ucu opened and still keeps hidden, app_key -> name
+        self.hidden_apps = {}               # apps ucu opened and still keeps out of sight, app_key -> name
+        self.parked_apps = set()            # those of them on the agent's desktop, as app_key names
         self.views = {}                     # (app, window) -> the last View
         self.shots = {}                     # (app, window) -> (scale, margin x, margin y) of the last screenshot
         self.running = 0                    # tool calls in flight
@@ -945,7 +961,7 @@ class Server:
                     for name, times in collections.Counter(names).items()]
             notes.append(ALERT_NOTE.format(" and ".join(apps)))
         # A hidden app turns down some actions with its alert sound, such as opening its settings.
-        if self.hidden_apps and any(app_key(name) in self.hidden_apps for name in names):
+        if any(app_key(name) in self.hidden_apps and app_key(name) not in self.parked_apps for name in names):
             notes.append(SHOWN_NOTE.format(" and ".join(self.hidden_apps.values())))
             threading.Thread(target=self.put_hidden_apps_on_desktop, daemon=True).start()
         return notes
@@ -955,6 +971,7 @@ class Server:
             self.windows.send({"allow": str(arguments.get("app") or "")})
             with self.lock:
                 self.hidden_apps.pop(app_key(arguments.get("app") or ""), None)
+                self.parked_apps.discard(app_key(arguments.get("app") or ""))
         if name == "look":
             return self.look(arguments)
         if name == "act":
@@ -1028,9 +1045,15 @@ class Server:
         self.windows.start()
         reply = self.windows.ask({"open": name, "deny": denied}, OPEN_TIMEOUT) or {}
         if reply.get("state") in ("opened", "reopened") and not quiet:
+            # A hidden app shows itself, wherever its windows are, whenever it comes forward, so ucu's apps live on the
+            # agent's desktop, where showing shows the user nothing. Without one they stay hidden.
+            parked = (self.windows.ask({"park": [name], "onlyHidden": True}, PARK_TIMEOUT) or {}).get("state")
             with self.lock:
                 self.hidden_apps[app_key(name)] = name
-            self.windows.note((OPENED_NOTE if reply["state"] == "opened" else REOPENED_NOTE).format(name))
+                if parked == "parked":
+                    self.parked_apps.add(app_key(name))
+            place = "on your private desktop" if parked == "parked" else "hidden"
+            self.windows.note((OPENED_NOTE if reply["state"] == "opened" else REOPENED_NOTE).format(name, place))
         elif browser_note and reply.get("active") and self.browser_of(app_key(name)):
             self.windows.note(BROWSER_NOTE.format(name, self.browser_of(app_key(name)).tool))
         return reply.get("state")
@@ -1044,9 +1067,11 @@ class Server:
         reply = self.windows.ask({"park": names, "onlyHidden": True}, PARK_TIMEOUT)
         if not reply or reply.get("state") != "parked":
             with self.lock:
-                self.hidden_apps = {}
+                self.hidden_apps, self.parked_apps = {}, set()
             self.windows.ask({"show": names}, SHOW_TIMEOUT)
             return True
+        with self.lock:
+            self.parked_apps.update(map(app_key, names))
         return bool(reply.get("moved"))
 
     def move_to_desktop(self, app):
@@ -1060,6 +1085,7 @@ class Server:
             return "There is no agent desktop on this Mac, so the windows stayed where they are.", True
         with self.lock:
             self.hidden_apps[app_key(app)] = app
+            self.parked_apps.add(app_key(app))
         return f"{app} is on your private desktop.", False
 
     # --- look and act -----------------------------------------------------
@@ -1141,10 +1167,15 @@ class Server:
         self.views[key] = view
         index = 0
         while index < len(steps):
-            ending = next((at for at in range(index, len(steps)) if "xy" in steps[at]), len(steps))
+            ending = next((at for at in range(index, len(steps))
+                           if "xy" in steps[at] or self.is_shortcut(steps[at])), len(steps))
             try:
                 if ending > index:
                     view, index = self.run_steps(app, view, steps, index, ending)
+                elif self.is_shortcut(steps[index]):
+                    if not self.menu_press(app, steps[index]):  # a shortcut that isn't a menu command: keys, then
+                        view, _ = self.run_steps(app, view, steps, index, index + 1)
+                    index += 1
                 else:
                     view = self.click_at(app, title, key, view, steps[index])
                     index += 1
@@ -1205,6 +1236,21 @@ class Server:
             raise ToolError(f"Step {index + ran + 1} failed: {failure}" + (f" The {index + ran} before it ran."
                                                                           if index + ran else ""))
         return view, ending
+
+    @staticmethod
+    def is_shortcut(step):
+        return step.get("do") == "press" and "+" in str(step.get("keys") or "")
+
+    @staticmethod
+    def menu_press(app, step):
+        """Run a shortcut through the app's menu bar. An app in the background turns down most shortcut keys, and a
+        hidden one takes no keys at all, but their menus work."""
+        try:
+            done = subprocess.run([str(WINDOW_HELPER), "press", app, str(step.get("keys"))], capture_output=True,
+                                  text=True, timeout=15, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return done.returncode == 0
 
     def trail(self, points):
         for point in points:

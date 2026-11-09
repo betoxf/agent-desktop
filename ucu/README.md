@@ -14,7 +14,7 @@
 | Capability | What it gives you |
 | --- | --- |
 | Works in the background | Agents click, type and read other apps without moving your pointer or taking focus. |
-| Stays out of your way | A closed app opens hidden, and an app an agent drives can't take your focus or your keyboard. |
+| Stays out of your way | A closed app opens on a private desktop you never see, and apps agents drive can't take your focus. |
 | Has its own desktop | Apps that need clicks by position run on a private desktop you never see. |
 | Clicks anything | A click by position presses the element at that point, or sends raw input to the window, even a canvas with no accessibility tree. |
 | Shares your browsers | The `safari` and `chrome` tools work in the agent's own window, so you keep your tabs and your keyboard. |
@@ -114,8 +114,8 @@ The first use of each app by a chat, and every refusal, goes to `~/Library/Logs/
 - `look {app, window?, full?, screenshot?}`: an app's window as numbered text, then only what changed.
 - `act {app, window?, steps}`: steps in order, then what changed. It stops at the first step that fails.
 - `list_windows {app?}`: the windows of an app, or of every app, and which is the main window.
-- `focus_window {app, title, unfullscreen?, activate?}`: makes a window the main window. With `activate: true`, the app
-  comes to the front, only to show you something.
+- `focus_window {app, title, unfullscreen?, activate?}`: makes a window the main window. With `activate: true`, the
+  window comes to your screen and the front, only when you ask to see it.
 - `move_to_desktop {app}`: moves an app's windows to the agent's private desktop.
 - `safari {op, ...}` and `chrome {op, ...}`: work in Safari and Google Chrome in the agent's own window.
 
@@ -142,27 +142,36 @@ The server sends the usage rules in its MCP `instructions`, so clients get them 
 
 ### Staying out of your way
 
-When an agent uses a closed app, UCU opens it hidden. Its Dock icon shows it is running, and nothing appears on screen
-unless you click that icon or the agent calls `focus_window` with `activate: true`. Apps that show themselves anyway, such
-as Blender, are hidden as soon as their window appears, behind your front app. A denied app stays closed.
+When an agent uses a closed app, UCU opens it on the agent's private desktop, a screen you never see. Its Dock icon
+shows it is running, and nothing appears on your screens. A hidden app shows itself wherever its windows are as soon as
+it comes forward, so UCU's apps live where showing shows you nothing, and a new window such an app opens joins it there
+at once. Agents read it, take screenshots and act on it as usual, clicks by position too. If your Mac can't make the
+private desktop, the app stays hidden instead, and goes back into hiding whenever it comes forward. A denied app stays
+closed.
 
-Agents read a hidden app, take screenshots of it and act on its elements as usual. A click by position that ends up as
-raw input needs a window on screen, and so do a few actions an app refuses while hidden. For those, UCU moves the app to
-the agent's private desktop.
+Agents never need the front: every action works in the background, and a shortcut such as Command-N runs through the
+app's menu, which works even on a hidden app. The usage rules tell agents to bring an app forward only when you ask to
+see it or be taken there, never to make an action work, and to leave your clipboard alone.
 
-Agents never need the front: every action works in the background, and the usage rules tell them to bring an app
-forward only to show you something, never to make an action work, and to leave your clipboard alone. Apps still come forward by themselves, such as Chrome when it
-opens a window, a tab or an extension's popup. If an app a chat drives does that while the chat works or in the 10
-seconds after, UCU puts your app back at once, usually within a hundredth of a second, and tells the agent. When the
-agent's own step is what brings it forward, such as making its Chrome window or tab, that always happens. Otherwise UCU
-leaves the app in front if you clicked, pressed a modifier key, or hold Return just before, or if your app is no longer
-in sight, because you may have switched apps or Spaces yourself. Typing in your app doesn't count, since that is when a
+Apps still come forward by themselves, such as Chrome when it opens a window, a tab or an extension's popup. UCU puts
+your app back at once, usually within a hundredth of a second, and tells the agent: for an app it opened, whenever that
+happens while the chat runs; for an app you use too, while the chat works on it and for 10 seconds after. When the
+agent's own step is what brings it forward, such as making its Chrome window, that always happens. Otherwise UCU leaves
+the app in front if you clicked, pressed a modifier key, or hold Return just before, or if your app is no longer in
+sight, because you may have switched apps or Spaces yourself. Typing in your app doesn't count, since that is when a
 stolen focus hurts most. A new app that starts during a call is held back too, unless you did anything since just before
 it started.
 
 In an app a chat drives, one of the agent's windows out of sight can become the main window, such as its Chrome window
 when it shows or opens a popup. Your window gets the main role back, so your typing, or your next Command-Tab to that
-app, lands where you can see it. `focus_window` with `activate: true` lets an app come forward only for that call.
+app, lands where you can see it.
+
+When you ask to see what the agent is doing, or to be taken there, `focus_window` with `activate: true` brings that
+window from the private desktop to your screen and to the front, and the browser tools' `show` hands you the agent's
+tab. That is the only way UCU brings anything forward.
+
+Every time an app comes forward during agent work, `~/Library/Logs/ucu/focus.log` says what UCU did, naming the apps but
+no window titles, and `ucu doctor` sums up the last day.
 
 ### The private desktop
 
@@ -185,6 +194,7 @@ works in a window of its own, so you can keep browsing, and several agents can w
 - `navigate`, `read`, `click`, `type`, `wait` and `eval` work in those tabs, out of your sight.
 - `upload` gives a page local files without its file picker, which would need the browser in front: they go into a file
   input as if chosen there, or are dropped on a drop zone. Agents confirm with you first.
+- `show` hands you the agent's tab when you ask to see it: its window comes to your screen, in front, and stays yours.
 - `shot` takes a screenshot. Your window keeps the keyboard.
 - Changing one of your tabs needs `allow_user_tab`, and the tab you are viewing also needs `allow_current_tab`. Agents are
   told to use those only if you asked.
