@@ -3,7 +3,7 @@
 
 Every command and its exit are appended as JSON to $FAKE_WINDOW_LOG, with the time. An app counts as closed if its name
 starts with "Closed", as windowless if it starts with "Empty", and as denied if it is in the request's `deny`. "Safari"
-is the active app. An app with "Stuck" in its name can't move to the agent's desktop. Each line added to
+and "Google Chrome" are active, as if the user were in them. An app with "Stuck" in its name can't move to the agent's desktop. Each line added to
 $FAKE_WINDOW_REPORTS goes out as a report. Run without `watch`, it logs its arguments like the other commands.
 """
 import json
@@ -45,7 +45,7 @@ def answer(command):
             state = "reopened"
         else:
             state = "running"
-        send({"id": command["id"], "state": state, "active": name == "Safari"})
+        send({"id": command["id"], "state": state, "active": name in ("Safari", "Google Chrome")})
     elif "show" in command and "id" in command:
         send({"id": command["id"]})
     elif "park" in command and "id" in command:

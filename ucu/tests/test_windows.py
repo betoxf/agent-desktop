@@ -27,18 +27,35 @@ class WatchingProxy(Proxy):
         path.write_text(f'#!/bin/sh\nexec "{sys.executable}" -I "{ROOT / "tests/fake_ucu_window.py"}" "$@"\n')
         path.chmod(0o755)
         (self.tools / "osascript").write_text(f'#!/bin/sh\nexec "{sys.executable}" -I "{ROOT / "tests/fake_osascript.py"}" "$@"\n')
-        (self.tools / "screencapture").write_text('#!/bin/sh\nfor last; do :; done\nprintf picture > "$last"\n')
+        (self.tools / "screencapture").write_text(
+            '#!/bin/sh\necho "$@" > "$HOME/screencapture.args"\nfor last; do :; done\nprintf picture > "$last"\n')
         (self.tools / "osascript").chmod(0o755)
         (self.tools / "screencapture").chmod(0o755)
         self.initialize()
 
     def safari(self, **arguments):
+        return self.browser("safari", **arguments)
+
+    def chrome(self, **arguments):
+        return self.browser("chrome", **arguments)
+
+    def browser(self, tool, **arguments):
         if not (Path(self.home.name) / "Library/Application Support/ucu/policy.json").exists():
             self.policy(deny=[])
-        return self.request("tools/call", {"name": "safari", "arguments": arguments})["result"]
+        return self.request("tools/call", {"name": tool, "arguments": arguments})["result"]
 
     def safari_calls(self, op=None):
-        return [command["safari"] for command in self.commands("safari") if op in (None, command["safari"]["op"])]
+        return self.browser_calls("safari", op)
+
+    def chrome_calls(self, op=None):
+        return self.browser_calls("chrome", op)
+
+    def browser_calls(self, browser, op=None):
+        return [command["osascript"] for command in self.commands("osascript")
+                if command["osascript"]["browser"] == browser and op in (None, command["osascript"]["op"])]
+
+    def screencapture_args(self):
+        return (Path(self.home.name) / "screencapture.args").read_text().split()
 
     def report(self, **fields):
         with self.window_reports.open("a") as handle:
@@ -316,6 +333,139 @@ class SafariTest(unittest.TestCase):
         proxy = WatchingProxy(self)
         proxy.policy(deny=[])
         self.assertIn("`safari` tool", proxy.notes(proxy.look("Safari"))[0])
+
+
+    def test_puts_files_in_a_page_without_its_picker(self):
+        proxy = WatchingProxy(self)
+        report = Path(proxy.home.name) / "My Report.pdf"
+        report.write_bytes(b"%PDF-1.4")
+        proxy.safari(op="open", url="https://a.test")
+        result = proxy.safari(op="upload", selector="#file", paths=[str(report)])
+        self.assertEqual(json.loads(result["content"][0]["text"])["uploaded"], ["My Report.pdf"])
+        call = proxy.safari_calls("upload")[0]
+        self.assertEqual(call["files"], [{"path": str(report), "name": "My Report.pdf", "type": "application/pdf"}])
+        self.assertEqual((call["window_id"], call["tab_index"], call["selector"]), (900, 1, "#file"))
+        self.assertNotIn("paths", call)
+
+    def test_uploads_only_files_it_can_find(self):
+        proxy = WatchingProxy(self)
+        proxy.safari(op="open", url="https://a.test")
+        for paths in (["notes.txt"], [str(Path(proxy.home.name) / "missing.txt")], [proxy.home.name], []):
+            result = proxy.safari(op="upload", paths=paths)
+            self.assertTrue(result["isError"], paths)
+        self.assertEqual(proxy.safari_calls("upload"), [])
+
+    def test_uploads_to_a_tab_of_the_users_only_when_told(self):
+        proxy = WatchingProxy(self)
+        report = Path(proxy.home.name) / "report.csv"
+        report.write_text("a,b")
+        refused = proxy.safari(op="upload", window_id=51, tab_index=1, paths=[str(report)])
+        self.assertIn("the user's", refused["content"][0]["text"])
+        self.assertEqual(proxy.safari_calls("upload"), [])
+
+
+class ChromeTest(unittest.TestCase):
+    def test_works_in_a_window_of_its_own_on_the_agents_desktop(self):
+        proxy = WatchingProxy(self)
+        opened = json.loads(proxy.chrome(op="open", url="https://a.test")["content"][0]["text"])
+        proxy.chrome(op="read", what="text")
+        self.assertEqual(opened["window_id"], 901)
+        made = proxy.chrome_calls("create_window")[0]
+        self.assertEqual(made["bounds"], {"x": -1900, "y": -1160, "width": 1280, "height": 900})
+        self.assertEqual(proxy.chrome_calls("read")[0]["window_id"], 901)
+        self.assertIn("google chrome", [name for command in proxy.commands("watch") for name in command["watch"]])
+        self.assertEqual(proxy.safari_calls(), [])
+
+    def test_hides_its_window_after_the_turn_and_brings_it_back_for_the_next(self):
+        proxy = WatchingProxy(self)
+        proxy.chrome(op="open", url="https://a.test")
+        self.assertEqual(proxy.chrome_calls("show_window"), [])
+        proxy.end_turn()
+        proxy.wait_until(lambda: proxy.chrome_calls("hide_window"))
+        proxy.chrome(op="read")
+        self.assertEqual(proxy.chrome_calls("show_window")[0]["bounds"]["x"], -1900)
+
+    def test_closes_its_window_when_the_chat_ends(self):
+        proxy = WatchingProxy(self)
+        proxy.chrome(op="open", url="https://a.test")
+        proxy.process.stdin.close()
+        proxy.process.wait(10)
+        self.assertEqual(proxy.chrome_calls("close_window")[0]["window_id"], 901)
+
+    def test_captures_its_own_window_where_it_put_it(self):
+        proxy = WatchingProxy(self)
+        proxy.chrome(op="open", url="https://a.test")
+        image = proxy.chrome(op="shot")["content"][0]
+        self.assertEqual(base64.b64decode(image["data"]), b"picture")
+        self.assertIn("-l6", proxy.screencapture_args())
+
+    def test_picks_its_own_window_when_the_user_has_the_same_page_open(self):
+        proxy = WatchingProxy(self)
+        proxy.chrome(op="open", url="https://mail.test")
+        proxy.look("Google Chrome", window="Mail")
+        snapshot = proxy.engine_calls("snapshot")[0]
+        self.assertEqual(snapshot[snapshot.index("--window-id") + 1], "w-6")
+
+    def test_says_how_to_turn_on_what_chrome_needs(self):
+        proxy = WatchingProxy(self)
+        result = proxy.chrome(op="open", url="https://no-javascript.test")
+        self.assertTrue(result["isError"])
+        self.assertIn("ask them to turn on View > Developer > Allow JavaScript from Apple Events, in Chrome",
+                      result["content"][0]["text"])
+
+    def test_points_to_the_tool_when_the_user_is_in_chrome(self):
+        proxy = WatchingProxy(self)
+        proxy.policy(deny=[])
+        self.assertIn("`chrome` tool", proxy.notes(proxy.look("Google Chrome"))[0])
+        self.assertEqual(proxy.notes(proxy.look("Google Chrome", window="Mail")), [])
+
+    def test_keeps_the_users_browser_windows_where_they_are(self):
+        proxy = WatchingProxy(self)
+        for app in ("Google Chrome", "Safari"):
+            result = proxy.call("move_to_desktop", app=app)
+            self.assertTrue(result["result"]["isError"])
+            self.assertIn("tool", proxy.text(result))
+        self.assertEqual(proxy.commands("park"), [])
+
+    def test_stays_out_of_chrome_when_it_is_denied(self):
+        proxy = WatchingProxy(self)
+        proxy.policy(deny=["Google Chrome"])
+        self.assertTrue(proxy.chrome(op="open", url="https://a.test")["isError"])
+        self.assertEqual(proxy.chrome_calls(), [])
+
+    def test_has_the_helper_undo_the_focus_its_own_steps_take(self):
+        proxy = WatchingProxy(self)
+        proxy.chrome(op="open", url="https://a.test")
+        self.assertIn("Google Chrome", [command["ours"] for command in proxy.commands("ours")])
+
+    def test_still_tells_the_agent_about_a_window_its_page_opens(self):
+        proxy = WatchingProxy(self)
+        proxy.chrome(op="open", url="https://a.test")
+        time.sleep(3.1)  # long after its own window was made
+        proxy.chrome(op="navigate", url="https://b.test")
+        proxy.report(event="focus", app="Google Chrome", back="Mail")
+        proxy.report(event="window", app="Google Chrome", kind="window", title="Sign in", text="", buttons=[],
+                     main=False)
+        notes = proxy.notes(proxy.look())
+        self.assertEqual(len(notes), 1)
+        self.assertIn("Sign in", notes[0])
+
+    def test_doesnt_tell_the_agent_about_the_window_it_just_made(self):
+        proxy = WatchingProxy(self)
+        proxy.chrome(op="open", url="https://a.test")
+        proxy.report(event="focus", app="Google Chrome", back="Mail")
+        proxy.report(event="window", app="Google Chrome", kind="window", title="New Tab", text="", buttons=[],
+                     main=False)
+        self.assertEqual(proxy.notes(proxy.look()), [])
+
+
+class FocusNoteTest(unittest.TestCase):
+    def test_tells_the_agent_when_the_user_got_their_window_back(self):
+        proxy = WatchingProxy(self)
+        proxy.look()
+        proxy.report(event="focus", app="Google Chrome", back="Inbox", window=True)
+        note = proxy.notes(proxy.look())[0]
+        self.assertIn("Google Chrome gave one of your windows the user's keyboard", note)
 
 
 class WindowNoteTest(unittest.TestCase):

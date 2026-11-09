@@ -465,18 +465,23 @@ final class AgentCursor {
 //   {"id": 4, "park": ["Blender"]}                      move apps' windows to that desktop and show them there
 //   {"watch": ["safari"]}                               report these apps' new windows from now on
 //   {"busy": true}                                      an agent's call began (false: it ended)
-//   {"allow": "Blender"}                                bring this app back and let it come to the front
+//   {"allow": "Blender"}                                bring this app back and let it come to the front just now
+//   {"ours": "Google Chrome"}                           the agent is about to bring this app forward: always undo it
 //   {"cursor": "#E5484D"}                               draw the agent's cursor in this color
 //   {"cursorTo": [640, 480]}                            move the cursor to this place on screen
 //   {"turnEnded": true}                                 the turn ended, so the cursor can go
 //
 // Reports are {"event": "window", ...} for a new window, and {"event": "focus", ...} when an app that an agent's
-// action started or drives came to the front by itself and the user's app was put back.
+// action started or drives came to the front by itself and the user's app was put back, or, with "window": true, when
+// it gave one of its windows out of sight the keyboard and the user's window got it back.
 final class Watcher {
     static let dialogOwners: Set<String> = ["SecurityAgent", "UserNotificationCenter", "CoreServicesUIAgent",
                                             "AuthenticationServicesAgent", "coreautha"]
     static let quietTail = 1.5, windowSettle = 0.3, hideGuard = 3.0, noWindowLimit = 6.0, openLimit = 45.0
     static let inputWindow = 1.5, longestCall = 300.0, moveSettle = 0.3
+    // Apps come forward by themselves seconds after an action too, such as a browser once a page has loaded.
+    static let guardTail = 10.0, allowGrace = 5.0, switchWindow = 1.0, modifierWindow = 0.5, focusTick = 0.1
+    static let putBackCheck = 0.1, putBackTries = 3, oursGrace = 3.0
 
     var watched = Set<String>()
     var driven = [NSRunningApplication]()  // the watched apps that were running when the last call began
@@ -489,8 +494,13 @@ final class Watcher {
     var parked = [pid_t: (app: NSRunningApplication, places: [(AXUIElement, CGPoint)], target: CGPoint)]()
     var busySince = Date.distantFuture
     var busyUntil = Date.distantPast
+    var guardUntil = Date.distantPast  // until then, the apps this chat drives can't take the user's focus
     var front = NSWorkspace.shared.frontmostApplication
+    var userWindows = [pid_t: AXUIElement]()  // each driven app's window the user last had, which they can see
+    var guardTicks = 0
     var allowed: pid_t?
+    var allowedUntil = Date.distantPast
+    var oursUntil = [pid_t: Date]()  // until when an app comes forward because of the agent, whatever the user does
 
     func run() -> Never {
         signal(SIGPIPE, SIG_IGN)
@@ -507,6 +517,9 @@ final class Watcher {
         Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [self] _ in
             if Date() < busyUntil { scan() }
         }
+        Timer.scheduledTimer(withTimeInterval: Self.focusTick, repeats: true) { [self] _ in
+            if Date() < guardUntil { guardWindow() }
+        }
         Thread.detachNewThread { [self] in
             while let line = readLine() {
                 guard let data = line.data(using: .utf8),
@@ -522,8 +535,32 @@ final class Watcher {
     // Without the desktop, macOS moves its windows back to the user's screens, so they are hidden first.
     func finish() {
         parked.values.forEach { $0.app.hide() }
-        if parked.isEmpty { exit(0) }
+        let tucked = tuckAway()
+        if parked.isEmpty && !tucked { exit(0) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exit(0) }
+    }
+
+    // A window of an app that isn't parked can still be on the desktop, such as an agent's own browser window when the
+    // server stopped before hiding it. Hiding its app would hide the user's windows too, so it goes to the Dock.
+    func tuckAway() -> Bool {
+        guard let area = desktop.bounds else { return false }
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        let owners = Set(list.compactMap { window -> pid_t? in
+            guard let pid = (window[kCGWindowOwnerPID as String] as? Int).map(pid_t.init), parked[pid] == nil,
+                  pid != getpid(), (window[kCGWindowLayer as String] as? Int) == 0,
+                  area.intersects(bounds(of: window)) else { return nil }
+            return pid
+        })
+        var tucked = false
+        for pid in owners {
+            let list: [AXUIElement] = attribute(appElement(pid), kAXWindowsAttribute) ?? []
+            for window in list where Self.isOutOfSight(window) {
+                tucked = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+                    == .success || tucked
+            }
+        }
+        return tucked
     }
 
     func handle(_ command: [String: Any]) {
@@ -537,13 +574,18 @@ final class Watcher {
             watched.formUnion(names.map(key))
             driven = watched.compactMap(running)
         }
+        if let name = command["ours"] as? String, let app = running(name) {
+            oursUntil[app.processIdentifier] = Date() + Self.oursGrace
+        }
         if let name = command["allow"] as? String, let app = running(name) {
             allowed = app.processIdentifier
+            allowedUntil = Date() + Self.allowGrace  // only for the call that asked: later it can't come forward again
             keptHidden.remove(app.processIdentifier)
             bringBack(app)
         }
         if let busy = command["busy"] as? Bool {
             busyUntil = Date() + (busy ? Self.longestCall : Self.quietTail)  // no end comes if the server crashes
+            guardUntil = Date() + (busy ? Self.longestCall : Self.guardTail)
             if busy {
                 busySince = Date()
                 front = NSWorkspace.shared.frontmostApplication
@@ -628,7 +670,7 @@ final class Watcher {
         var finished: Date?, replied: Date?
         keptHidden.insert(pid)
         Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [self] timer in
-            if app.isTerminated || !keptHidden.contains(pid) || (app.isActive && Self.userIsActive())
+            if app.isTerminated || !keptHidden.contains(pid) || (app.isActive && Self.userSwitched())
                 || (replied.map { -$0.timeIntervalSinceNow > Self.hideGuard } ?? false) {
                 if replied == nil { reply(state) }
                 keptHidden.remove(pid)
@@ -831,31 +873,103 @@ final class Watcher {
 
     // MARK: focus
 
-    // The HID state only counts real input, not the events the engine sends to an app. Any click, key or swipe just
-    // before may be the user switching apps themselves, and undoing that would be worse than leaving a stray app up.
+    // The HID state only counts real input, not the events the engine sends to an app.
+    static func secondsSince(_ type: CGEventType) -> Double {
+        CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: type)
+    }
+
+    static let gesture = CGEventType(rawValue: 29)!  // trackpad gestures, and on some Macs key presses too
+
+    // Whether the user did anything at all lately. An app takes seconds to start, so this is how a new one counts as
+    // theirs: they may have opened it from Spotlight or a link.
     static func userIsActive(within seconds: Double = inputWindow) -> Bool {
-        let swipe = CGEventType(rawValue: 29)!  // a trackpad gesture, which can change Spaces; it has no name here
-        let types: [CGEventType] = [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .flagsChanged,
-                                    .scrollWheel, swipe]
-        return types.contains {
-            CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) < seconds
-        }
+        [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .flagsChanged, .scrollWheel, gesture]
+            .contains { secondsSince($0) < seconds }
+    }
+
+    // Whether the user may have just switched apps themselves: they clicked a window, a Dock icon or a link another app
+    // opens, used a modifier key such as Command-Tab, or hold Return down in Spotlight or another launcher. Typing in
+    // the app they are in switches nothing, so it doesn't count: that is when a stolen focus hurts most. Gesture events
+    // can't tell a swipe to another Space, since key presses count as gestures too, and macOS's notice of a new Space
+    // also comes when an agent's desktop is made, so a swipe is told by the user's app having gone out of sight.
+    static func userSwitched() -> Bool {
+        [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains { secondsSince($0) < switchWindow }
+            || secondsSince(.flagsChanged) < modifierWindow
+            || [CGKeyCode(36), CGKeyCode(76)].contains { CGEventSource.keyState(.hidSystemState, key: $0) }
     }
 
     func activated(_ app: NSRunningApplication) {
         let previous = front, pid = app.processIdentifier, launched = app.launchDate ?? .distantPast
-        let isNew = launched > busySince
-        // An app takes seconds to start, so a new one counts as the user's if they did anything since just before it.
-        let sinceInput = isNew ? -launched.timeIntervalSinceNow + Self.inputWindow : Self.inputWindow
+        let isNew = launched > busySince, ours = Date() < oursUntil[pid] ?? .distantPast
         front = app
-        if Self.userIsActive() { bringBack(app) }  // they clicked its Dock icon: its windows can't stay out of sight
-        guard Date() < busyUntil, let previous, previous.processIdentifier != pid, !previous.isTerminated,
-              pid != allowed, isNew || driven.contains(app), !Self.userIsActive(within: sinceInput) else { return }
+        if !ours, Self.userSwitched() { bringBack(app) }  // they clicked its Dock icon: its windows can't stay hidden
+        guard let previous, previous.processIdentifier != pid, !previous.isTerminated,
+              !(pid == allowed && Date() < allowedUntil) else { return }
+        // A new app is held back while a call runs, unless the user did anything since just before it started.
+        if isNew {
+            guard Date() < busyUntil, !Self.userIsActive(within: -launched.timeIntervalSinceNow + Self.inputWindow)
+            else { return }
+            putBack(previous, over: app)
+            keepHidden(app, id: nil)
+            return
+        }
+        // An app this chat drives can't come forward by itself while the chat works and for a while after. When the
+        // agent is bringing it forward, the user's clicks have nothing to do with it. The user's app must still be in
+        // sight: if it isn't, they went to another Space themselves.
+        guard Date() < guardUntil, driven.contains(app) || ours, ours || !Self.userSwitched(), !previous.isHidden,
+              Self.isOnScreen(previous) else { return }
+        putBack(previous, over: app, ours: ours)
+    }
+
+    // The user's app comes back to the front. Asking it can fail while it is busy, so it is asked again.
+    func putBack(_ previous: NSRunningApplication, over app: NSRunningApplication, ours: Bool = false,
+                 tries: Int = putBackTries) {
         front = previous
         AXUIElementSetAttributeValue(appElement(previous.processIdentifier), kAXFrontmostAttribute as CFString,
                                      kCFBooleanTrue)
-        if isNew { keepHidden(app, id: nil) }
-        emit(["event": "focus", "app": app.localizedName ?? "?", "back": previous.localizedName ?? "?"])
+        if tries == Self.putBackTries {
+            emit(["event": "focus", "app": app.localizedName ?? "?", "back": previous.localizedName ?? "?"])
+        }
+        guard tries > 1 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.putBackCheck) { [self] in
+            let stays = NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
+            if stays, ours || !Self.userSwitched() { putBack(previous, over: app, ours: ours, tries: tries - 1) }
+        }
+    }
+
+    // In an app this chat drives, a window out of sight can become the main one, such as the agent's browser window on
+    // its desktop when it shows or opens a popup. In the app the user is in, their typing would go there; in another,
+    // it would get the keyboard as soon as they switch to that app. So their window gets the main role back. The app
+    // they are in is checked at every tick, the others now and then, and parked apps have no window of theirs.
+    func guardWindow() {
+        guardTicks += 1
+        for app in driven where !app.isTerminated && !app.isHidden && parked[app.processIdentifier] == nil
+            && (app.isActive || guardTicks % 5 == 0) {
+            let pid = app.processIdentifier, element = appElement(pid), isFront = app.isActive
+            let role = isFront ? kAXFocusedWindowAttribute : kAXMainWindowAttribute
+            guard let current: AXUIElement = attribute(element, role) else { continue }
+            guard Self.isOutOfSight(current) else {
+                userWindows[pid] = current
+                continue
+            }
+            let windows: [AXUIElement] = attribute(element, kAXWindowsAttribute) ?? []
+            let known = userWindows[pid].flatMap { mine in windows.first { CFEqual($0, mine) } }
+            let inSight = windows.first { !Self.isOutOfSight($0) && !flag($0, kAXMinimizedAttribute) }
+            guard !(isFront && Self.userSwitched()), let theirs = known ?? inSight else { continue }
+            AXUIElementSetAttributeValue(theirs, kAXMainAttribute as CFString, kCFBooleanTrue)
+            guard isFront else { continue }  // nobody was typing: nothing to tell
+            AXUIElementPerformAction(theirs, kAXRaiseAction as CFString)
+            emit(["event": "focus", "app": app.localizedName ?? "?", "back": title(theirs), "window": true])
+        }
+    }
+
+    // Whether a window is where the user can't see it: on an agent's desktop, or on no screen.
+    static func isOutOfSight(_ window: AXUIElement) -> Bool {
+        var origin = CGPoint.zero, size = CGSize.zero
+        guard let place: AXValue = attribute(window, kAXPositionAttribute), AXValueGetValue(place, .cgPoint, &origin)
+        else { return false }
+        if let value: AXValue = attribute(window, kAXSizeAttribute) { AXValueGetValue(value, .cgSize, &size) }
+        return AgentDesktop.isOutOfSight(CGPoint(x: origin.x + size.width / 2, y: origin.y + min(size.height / 2, 20)))
     }
 }
 

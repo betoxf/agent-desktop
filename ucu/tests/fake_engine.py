@@ -3,7 +3,8 @@
 
 The window has a display and two buttons. Each click changes the display, so a look after it finds a change. A ref ending
 in e99 is stale. An app called "Slow" takes a while, "Many" has two windows, and "Broken" answers with a snapshot ucu
-can't read.
+can't read. Google Chrome has two windows with the same title: the user's, and one where ucu puts the agent's on the
+fake desktop.
 """
 import json
 import os
@@ -53,6 +54,11 @@ def main():
             reply("not a snapshot")
         else:
             reply(snapshot(app))
+    elif command == "list-windows" and arguments[arguments.index("--app") + 1] == "Google Chrome":
+        reply([{"id": "w-5", "title": "Mail - Google Chrome",
+                "bounds": {"x": 0, "y": 33, "width": 1512, "height": 859}},
+               {"id": "w-6", "title": "Mail - Google Chrome",
+                "bounds": {"x": -1900, "y": -1160, "width": 1280, "height": 900}}])
     elif command == "list-windows":  # the real engine's data is the list itself
         reply([{"id": "w-1", "title": "One"}, {"id": "w-2", "title": "Two"}])
     elif command == "screenshot":

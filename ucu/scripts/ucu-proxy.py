@@ -16,8 +16,10 @@ server runs it once per action, and adds what makes it fit for working next to a
   native/ucu-window.swift;
 * apps stay out of the user's way. `ucu-window watch` opens a closed app hidden. Actions work on a hidden app, and a
   click by position that needs a window on screen moves the app to the agent's desktop, a virtual display nobody sees.
-  If an app comes to the front by itself while the user isn't typing or clicking, the user's app is put back;
-* a Safari window of each chat's own through the `safari` tool (native/safari.js);
+  An app the chat drives can't take the user's focus: if it comes to the front by itself, or makes a window of its out
+  of sight the main one, while the chat works or just after, the user gets theirs back. A click, a modifier key, Return,
+  or their app going out of sight counts as the user switching apps themselves, but their typing doesn't;
+* a Safari and a Chrome window of each chat's own through the `safari` and `chrome` tools (native/browser.js);
 * a note when another chat is using the app, through one small file per chat in
   ~/Library/Application Support/ucu/sessions;
 * a cursor color of each chat's own, kept in that same file, for the cursor `ucu-window watch` draws at each action;
@@ -39,6 +41,7 @@ import collections
 import hashlib
 import itertools
 import json
+import mimetypes
 import os
 import re
 import signal
@@ -55,7 +58,13 @@ from pathlib import Path
 LOCAL_ERROR = -32603
 NO_METHOD = -32601
 REPO = Path(__file__).resolve().parent.parent
-SAFARI_BACKEND = REPO / "native/safari.js"
+BROWSER_BACKEND = REPO / "native/browser.js"
+# Each browser tool's app, the names that deny it, and where the user allows JavaScript from Apple Events.
+BROWSERS = {"safari": ("Safari", {"safari", "com.apple.safari"},
+                       "Safari > Develop > Allow JavaScript from Apple Events"),
+            "chrome": ("Google Chrome", {"google chrome", "chrome", "com.google.chrome"},
+                       "View > Developer > Allow JavaScript from Apple Events, in Chrome")}
+UPLOAD_LIMIT = 50_000_000  # bytes a page gets in one upload
 ENGINE = Path.home() / ".local/bin/ucu-engine"
 ENGINE_TIMEOUT = 45  # seconds for one action
 SNAPSHOT_TIMEOUT_MS = 10000
@@ -83,12 +92,15 @@ OPENED_NOTE = ("[ucu: {} was closed, so ucu opened it hidden, out of the user's 
 REOPENED_NOTE = "[ucu: {} had no open window, so ucu opened one, hidden from the user.]"
 SHOWN_NOTE = ("[ucu: {} was hidden, and some input needs a window on screen, so ucu moved it where it can take that "
               "input without the user seeing it. Repeat the action.]")
-SAFARI_NOTE = ("[ucu: The user is working in Safari, and this acts on the window they are in. Use the `safari` tool "
-               "instead: it works in your own hidden window.]")
+BROWSER_NOTE = ("[ucu: The user is working in {}, and this acts on the window they are in. Use the `{}` tool instead: "
+                "it works in your own window.]")
+OWN_BROWSER = "Your own {} window works out of the user's sight already: use the `{}` tool."
 SHARED_NOTE = ("[ucu: Another agent ({}) is using {}. Two agents on one app undo each other's work: wait for it, or "
                "ask the user.]")
-FOCUS_NOTE = ("[ucu: {} came to the front during your actions, so ucu put {} back. Check that the app did what you "
-              "meant.]")
+FOCUS_NOTE = ("[ucu: {} came to the front during your actions, so ucu put {} back: the user keeps their focus. Check "
+              "that the app did what you meant.]")
+WINDOW_FOCUS_NOTE = ("[ucu: {} gave one of your windows the user's keyboard, so ucu gave it back to their window. "
+                     "Check that the app did what you meant.]")
 STALE_NOTE = "Numbers change with the window: call look and use the new number."
 BUG_NOTE = ("ucu hit a bug and stopped this call ({}). An action may already have happened: check the app before "
             "repeating it, and tell the user.")
@@ -102,8 +114,10 @@ USAGE_RULES = """ucu rules:
 - Call `look` to read an app, then `act` with numbered steps. `act` returns what changed, so don't call `look` after it.
 - Prefer numbers over positions. Use `xy` for what has no number, with pixels from a `look` screenshot.
 - With several windows, pass part of a title as `window`. Calls for different apps can run together.
+- Everything works in the background. Never bring an app to the front to make an action work, only to show the user \
+something, and never use the clipboard, which is theirs. If something can't be done in the background, ask the user.
 - ucu opens a closed app hidden, so the user isn't disturbed. Never use `open`, AppleScript or System Events on apps.
-- For Safari, use the `safari` tool: it works in your own hidden window while the user is in theirs.
+- For Safari and Chrome, use the `safari` and `chrome` tools: they work in your own window while the user is in theirs.
 - If an action has no visible effect, stop and tell the user: remote-desktop and canvas apps can ignore background \
 input.
 - Don't let two agents drive the same app at the same time."""
@@ -145,8 +159,8 @@ WINDOW_TOOLS = [
          "app": APP_PROPERTY,
          "title": {"type": "string", "description": "Part of the window's title, as list_windows shows it."},
          "unfullscreen": {"type": "boolean", "description": "Leave full screen first (default false)."},
-         "activate": {"type": "boolean", "description": "Show the app and bring it to the front, for when the user "
-                                                        "should see it (default false)."}},
+         "activate": {"type": "boolean", "description": "Bring the app to the front, only to show the user "
+                                                        "something: it takes their keyboard (default false)."}},
          "required": ["app", "title"]}},
     {"name": "move_to_desktop",
      "description": "Move an app's windows to your private desktop, a display the user can't see. They keep working, "
@@ -157,19 +171,29 @@ WINDOW_TOOLS = [
      "description": "Work in Safari without touching the user's windows or taking focus. `list` shows every window and "
                     "tab, the user's too. `open` loads a URL in a new tab of your own hidden window. In your tabs: "
                     "`navigate`, `read` (what: text, html, links, or interactive, which gives refs), `click`, `type`, "
-                    "`wait`, `eval` (a function body that returns a value) and `shot` (a screenshot). `close` closes a "
-                    "tab, or your window without tab_index. window_id and tab_index default to your last tab. Changing "
-                    "a tab of the user's needs allow_user_tab, and the one they are viewing also allow_current_tab: "
-                    "only if they asked. Clicks and typing are synthetic, so file pickers and some logins ignore them.",
+                    "`wait`, `eval` (a function body that returns a value), `upload` and `shot` (a screenshot). "
+                    "`close` closes a tab, or your window without tab_index. window_id and tab_index default to your "
+                    "last tab. Changing a tab of the user's needs allow_user_tab, and the one they are viewing also "
+                    "allow_current_tab: only if they asked. Clicks and typing are synthetic, so some logins ignore "
+                    "them. `upload` puts files (`paths`) in a file input (ref, or selector, default the first) or "
+                    "drops them on an element, with no picker: confirm with the user first.",
      "inputSchema": {"type": "object", "required": ["op"], "properties": {
-         "op": {"enum": ["list", "open", "navigate", "read", "click", "type", "wait", "eval", "shot", "close"]},
+         "op": {"enum": ["list", "open", "navigate", "read", "click", "type", "wait", "eval", "upload", "shot",
+                         "close"]},
          "url": {"type": "string"}, "window_id": {"type": "integer"}, "tab_index": {"type": "integer"},
          "what": {"enum": ["text", "html", "links", "interactive"]}, "selector": {"type": "string"},
          "ref": {"type": "string"}, "text": {"type": "string"}, "clear": {"type": "boolean"},
          "submit": {"type": "boolean"}, "script": {"type": "string"}, "max_chars": {"type": "integer"},
-         "timeout_seconds": {"type": "number"}, "allow_user_tab": {"type": "boolean"},
-         "allow_current_tab": {"type": "boolean"}}}},
+         "paths": {"type": "array", "items": {"type": "string"}}, "timeout_seconds": {"type": "number"},
+         "allow_user_tab": {"type": "boolean"}, "allow_current_tab": {"type": "boolean"}}}},
 ]
+WINDOW_TOOLS.append(
+    {"name": "chrome",
+     "description": "The `safari` tool in Google Chrome: your own window, on your private desktop while you work, "
+                    "and the user keeps theirs. look and act reach it with its title as `window`. For an extension's "
+                    "popup, open chrome-extension://<id>/<its page> in your tab: a popup closes once Chrome loses "
+                    "focus.",
+     "inputSchema": WINDOW_TOOLS[-1]["inputSchema"]})
 LOCAL_TOOLS = {tool["name"]: tool for tool in WINDOW_TOOLS}
 POLICY_SUMMARY = """# Computer Use confirmations (ucu's summary)
 
@@ -248,7 +272,7 @@ def quoted(text):
 def window_note(report):
     """Turn a report from `ucu-window watch` into a note for the agent."""
     if report.get("event") == "focus":
-        return FOCUS_NOTE.format(report.get("app"), report.get("back"))
+        return (WINDOW_FOCUS_NOTE if report.get("window") else FOCUS_NOTE).format(report.get("app"), report.get("back"))
     kind = report.get("kind") or "window"
     title, text, buttons = report.get("title"), report.get("text"), report.get("buttons")
     parts = [f"{report.get('app')} opened a {kind}" + (f" titled {quoted(title)}" if title else "")]
@@ -368,53 +392,73 @@ class Sessions:
             pass
 
 
-class SafariWorkspace:
-    """A chat's own Safari window. It stays hidden, so the user's windows keep the main role and the keyboard, and its
-    tabs work anyway. Safari stops painting hidden windows after a few seconds, so a screenshot shows the window on
-    the agent's desktop until the turn ends."""
+class BrowserWorkspace:
+    """A chat's own window in Safari or Chrome, worked through native/browser.js, so the user's windows keep the main
+    role and the keyboard. Safari's stays hidden and its tabs work anyway, but Safari stops painting hidden windows
+    after a few seconds, so a screenshot shows it on the agent's desktop until the turn ends. Chrome's is on that
+    desktop whenever the chat works in it, where pages behave as on a screen and look and act reach it, and hidden
+    after the turn. Making a Chrome window brings Chrome forward, and ucu-window puts the user's app back."""
 
     OPERATIONS = {"navigate": "navigate", "read": "read", "click": "click", "type": "type", "wait": "wait_for",
-                  "eval": "eval"}
-    CHANGES = {"navigate", "click", "type", "eval"}
+                  "eval": "eval", "upload": "upload"}
+    CHANGES = {"navigate", "click", "type", "eval", "upload"}
 
-    def __init__(self, server):
-        self.server = server
-        self.window, self.tab, self.shown = None, None, False
+    def __init__(self, server, tool):
+        self.server, self.tool = server, tool
+        self.app, self.keys, self.setting = BROWSERS[tool]
+        self.window, self.tab, self.shown, self.place = None, None, False, None
         self.lock = threading.Lock()
 
-    @staticmethod
-    def call(request, timeout=SAFARI_TIMEOUT):
+    def call(self, request, timeout=SAFARI_TIMEOUT):
+        request = {**request, "browser": self.tool}
         try:
-            result = subprocess.run(["osascript", "-l", "JavaScript", str(SAFARI_BACKEND), json.dumps(request)],
+            result = subprocess.run(["osascript", "-l", "JavaScript", str(BROWSER_BACKEND), json.dumps(request)],
                                     capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
-            raise RuntimeError("Safari didn't answer in time. A page may be showing a dialog.") from None
+            raise RuntimeError(f"{self.app} didn't answer in time. A page may be showing a dialog, or macOS may be "
+                               f"asking the user to let this app control {self.app}.") from None
         except OSError as error:
             raise RuntimeError(f"could not run osascript: {error}") from None
         try:
             reply = json.loads(result.stdout)
         except ValueError:
-            raise RuntimeError(SafariWorkspace.explain(result.stderr.strip() or "osascript failed")) from None
+            raise RuntimeError(self.explain(result.stderr.strip() or "osascript failed")) from None
         if not reply.get("ok"):
-            raise RuntimeError(SafariWorkspace.explain(str(reply.get("error"))))
+            raise RuntimeError(self.explain(str(reply.get("error"))))
         return reply["result"]
 
-    @staticmethod
-    def explain(message):
-        if "JavaScript from Apple Events" in message:
-            return f"{message} Turn on Safari > Develop > Allow JavaScript from Apple Events."
+    def explain(self, message):
+        if "JavaScript from Apple Events" in message or "JavaScript through AppleScript" in message:
+            return f"{message} It is the user's setting: ask them to turn on {self.setting}."
         if "-1743" in message or "Not authorized" in message:
-            return f"{message} Allow this app to control Safari in System Settings > Privacy & Security > Automation."
+            return (f"{message} Allow this app to control {self.app} in System Settings > Privacy & Security > "
+                    "Automation.")
         return message
+
+    def desktop_place(self):
+        """Where the window goes on the agent's desktop, or None when there is none."""
+        self.server.windows.start()
+        bounds = self.server.windows.desktop_bounds()
+        if not bounds:
+            return None
+        x, y, _width, _height = bounds
+        return {"x": x + 20, "y": y + 40, "width": 1280, "height": 900}
 
     def own_window(self):
         windows = self.call({"op": "list"})
-        if self.window is None or not any(window["window_id"] == self.window for window in windows):
-            self.server.open_hidden("Safari", quiet=True)
-            mark = uuid.uuid4().hex
-            self.window, self.shown = self.call({"op": "create_window", "mark": mark})["window_id"], False
-            return self.window, True
-        return self.window, False
+        if self.window is not None and any(window["window_id"] == self.window for window in windows):
+            return self.window, False
+        state = self.server.open_hidden(self.app, quiet=True)
+        request = {"op": "create_window", "mark": uuid.uuid4().hex}
+        if self.tool == "chrome":
+            # Nobody was using Chrome, so its windows can wait on the desktop, where the new one shows up too.
+            if state in ("opened", "reopened"):
+                self.server.windows.ask({"park": [self.app]}, PARK_TIMEOUT)
+            request["bounds"] = self.place = self.desktop_place()
+        self.server.windows.expect(self.app)  # the agent needn't hear about the window it made
+        self.window = self.call(request)["window_id"]
+        self.shown = bool(request.get("bounds"))
+        return self.window, True
 
     def target(self, arguments):
         window = arguments.get("window_id", self.window)
@@ -434,25 +478,42 @@ class SafariWorkspace:
                     and window["current_tab_index"] == target["tab_index"] and not arguments.get("allow_current_tab"):
                 raise RuntimeError("The user is viewing that tab. Pass allow_current_tab only if they asked you to.")
 
+    def reveal(self):
+        """Put the window on the agent's desktop for the rest of the turn; return whether it just went there."""
+        if self.shown or self.window is None:
+            return False
+        self.place = self.desktop_place()
+        if not self.place:
+            raise RuntimeError("There is no agent desktop to show the window on, so it can't be captured.")
+        self.server.windows.expect(self.app)  # its own window coming back is no news
+        self.call({"op": "show_window", "window_id": self.window, "bounds": self.place})
+        self.shown = True
+        return True
+
+    def window_number(self):
+        """The window server's number for the window, which a screenshot needs. Safari's window ids are those, but
+        Chrome's aren't, so Chrome's window is found where it was put."""
+        if self.tool == "safari":
+            return self.window
+        for window in Engine.run("list-windows", "--app", self.app) or []:
+            box, number = window.get("bounds") or {}, re.fullmatch(r"w-(\d+)", str(window.get("id")))
+            if number and self.place and all(abs(box.get(axis, -1e9) - self.place[axis]) < 4 for axis in "xy"):
+                return int(number.group(1))
+        raise RuntimeError(f"Your {self.app} window isn't on your desktop, so it can't be captured. If the user hid "
+                           f"{self.app}, its tabs still work.")
+
     def shot(self, target):
         if target["window_id"] != self.window:
             raise RuntimeError("A screenshot works on your own window only.")
-        if not self.shown:
-            self.server.windows.start()
-            desktop = self.server.windows.ask({"desktop": True}, PARK_TIMEOUT) or {}
-            if not desktop.get("bounds"):
-                raise RuntimeError("There is no agent desktop to show the window on, so it can't be captured.")
-            x, y, _width, _height = desktop["bounds"]
-            self.call({"op": "show_window", "window_id": self.window,
-                       "bounds": {"x": x + 20, "y": y + 40, "width": 1280, "height": 900}})
-            self.shown = True
+        if self.reveal():
             time.sleep(SAFARI_PAINT)
         if self.call({"op": "select_tab", **target})["changed"]:
             time.sleep(SAFARI_PAINT)
+        number = self.window_number()
         handle, name = tempfile.mkstemp(suffix=".jpg")
         os.close(handle)
         try:
-            done = subprocess.run(["screencapture", "-x", "-o", "-t", "jpg", f"-l{self.window}", name],
+            done = subprocess.run(["screencapture", "-x", "-o", "-t", "jpg", f"-l{number}", name],
                                   capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=SHOT_TIMEOUT)
             data = Path(name).read_bytes()
         except subprocess.TimeoutExpired:
@@ -463,13 +524,33 @@ class SafariWorkspace:
             raise RuntimeError("Could not capture the window. The app running this needs Screen Recording permission.")
         return [{"type": "image", "data": base64.b64encode(data).decode(), "mimeType": "image/jpeg"}]
 
+    @staticmethod
+    def files(paths):
+        """Check the files an upload names, and say what the page should call them."""
+        if not isinstance(paths, list) or not paths:
+            raise RuntimeError("Pass `paths`: the absolute paths of the files to upload.")
+        found, size = [], 0
+        for path in (Path(str(path)) for path in paths):
+            if not path.is_absolute() or not path.is_file():
+                raise RuntimeError(f"{path} is not a file. Pass absolute paths of files.")
+            size += path.stat().st_size
+            found.append({"path": str(path), "name": path.name,
+                          "type": mimetypes.guess_type(path.name)[0] or "application/octet-stream"})
+        if size > UPLOAD_LIMIT:
+            raise RuntimeError(f"Those files have {size // 1_000_000} MB; one upload takes up to "
+                               f"{UPLOAD_LIMIT // 1_000_000} MB.")
+        return found, size
+
     def run(self, arguments):
-        """Do one operation of the `safari` tool and return its MCP content."""
+        """Do one operation of the tool and return its MCP content."""
         op = arguments.get("op")
         denied = self.server.denied_apps()
-        if denied is None or {"safari", "com.apple.safari"} & {app_key(app) for app in denied}:
-            raise RuntimeError("Safari is on the user's deny list, or the list can't be read. Tell the user.")
+        if denied is None or self.keys & {app_key(app) for app in denied}:
+            raise RuntimeError(f"{self.app} is on the user's deny list, or the list can't be read. Tell the user.")
+        self.server.windows.send({"watch": [app_key(self.app)]})  # so it can't take the user's focus
         with self.lock:
+            if op not in ("list", "close", "shot"):  # a screenshot shows it itself, and waits for it to paint
+                self.reveal_quietly()
             if op == "list":
                 windows = self.call({"op": "list"})
                 for window in windows:
@@ -477,6 +558,7 @@ class SafariWorkspace:
                 result = windows
             elif op == "open":
                 window, created = self.own_window()
+                self.server.windows.expect(self.app, "focus")  # Chrome comes forward when it makes a tab
                 result = self.call({**arguments, "op": "open_tab", "window_id": window, "reuse_blank": created})
                 self.tab = result["tab_index"]
             elif op == "close" and "tab_index" not in arguments:
@@ -492,10 +574,24 @@ class SafariWorkspace:
                 if op in self.CHANGES:
                     self.guard(target, arguments)
                 allowed = {key: value for key, value in arguments.items() if not key.startswith("allow_")}
-                result = self.call({**allowed, **target, "op": self.OPERATIONS[op]})
+                timeout = SAFARI_TIMEOUT
+                if op == "navigate":  # Chrome comes forward if the page doesn't let the tab go through it
+                    self.server.windows.expect(self.app, "focus")
+                if op == "upload":
+                    allowed["files"], size = self.files(allowed.pop("paths", None))
+                    timeout += size / 1_000_000
+                result = self.call({**allowed, **target, "op": self.OPERATIONS[op]}, timeout=timeout)
             else:
                 raise RuntimeError(f"Unknown operation {op}")
         return [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]
+
+    def reveal_quietly(self):
+        """Chrome's window works on the agent's desktop while the chat works; without a desktop it works hidden."""
+        if self.tool == "chrome":
+            try:
+                self.reveal()
+            except RuntimeError:
+                pass
 
     def close_window(self):
         window, self.window, self.tab, self.shown = self.window, None, None, False
@@ -529,6 +625,8 @@ class WindowWatcher:
         self.ids = itertools.count(1)
         self.waiting = {}  # request id -> [event set on the reply, the reply]
         self.notes = []    # notes for the next `js` result
+        self.expected = {}  # (app_key, "window" or "focus") -> until when the agent knows about such reports
+        self.desktop = None  # where the agent's desktop was last seen; it goes with the helper
 
     def start(self):
         if self.process is None and not self.unusable:
@@ -539,6 +637,7 @@ class WindowWatcher:
             except OSError:
                 self.unusable = True
                 return
+            self.desktop = None
             threading.Thread(target=self.read, args=(self.process,), daemon=True).start()
             self.send({"cursor": self.color()})
 
@@ -554,7 +653,7 @@ class WindowWatcher:
                 if slot:
                     slot[1] = message
                     slot[0].set()
-            elif "event" in message:
+            elif "event" in message and not self.is_expected(message):
                 self.note(window_note(message))
         with self.lock:
             if self.process is process:
@@ -585,6 +684,24 @@ class WindowWatcher:
         with self.lock:
             self.waiting.pop(request_id, None)
         return slot[1]
+
+    def desktop_bounds(self):
+        """Make the agent's desktop if needed and return where it is, or None without one."""
+        self.desktop = (self.ask({"desktop": True}, PARK_TIMEOUT) or {}).get("bounds")
+        return self.desktop
+
+    def expect(self, app, *events, seconds=3):
+        """The agent is about to do something in this app that makes these reports, "window" or "focus", such as
+        making a window of its own, which brings the app forward: it needn't hear about them."""
+        with self.lock:
+            for event in events or ("window", "focus"):
+                self.expected[(app_key(app), event)] = time.monotonic() + seconds
+        if "focus" in (events or ("focus",)):
+            self.send({"ours": app})  # whatever the user does meanwhile, the app goes back behind theirs
+
+    def is_expected(self, report):
+        with self.lock:
+            return time.monotonic() < self.expected.get((app_key(report.get("app") or ""), report.get("event")), 0)
 
     def note(self, text):
         with self.lock:
@@ -738,7 +855,7 @@ class Server:
         self.alerts = AlertWatcher()
         self.sessions = Sessions()
         self.windows = WindowWatcher(lambda: self.sessions.cursor_color(self.folder))
-        self.safari = SafariWorkspace(self)
+        self.browsers = {tool: BrowserWorkspace(self, tool) for tool in BROWSERS}
         self.used_apps = set()              # apps this chat has driven, as app_key names
         self.logged_apps = set()            # apps already in the approval log for this chat
         self.hidden_apps = {}               # apps ucu opened and still keeps hidden, app_key -> name
@@ -842,8 +959,8 @@ class Server:
             return self.look(arguments)
         if name == "act":
             return self.act(arguments)
-        if name == "safari":
-            return self.safari.run(arguments)
+        if name in self.browsers:
+            return self.browsers[name].run(arguments)
         if name == "move_to_desktop":
             text, failed = self.move_to_desktop(str(arguments.get("app") or ""))
         else:
@@ -866,14 +983,19 @@ class Server:
         """Who an approval is for: the MCP client's name and the folder it runs in."""
         return "{}:{}".format("-".join(str(self.client.get("name") or "unknown").split()), self.folder)
 
-    def use(self, name):
-        """Make sure an agent may use this app, and get it ready; raise ToolError if it may not."""
+    def browser_of(self, key):
+        """The browser tool for an app, if it is a browser that has one."""
+        return next((workspace for workspace in self.browsers.values() if key in workspace.keys), None)
+
+    def use(self, name, window=None):
+        """Make sure an agent may use this app, and get it ready; raise ToolError if it may not. A browser window named
+        by its title may be the agent's own, which has to be on its desktop for look and act."""
         name, key = str(name or ""), app_key(name)
         if not name:
             raise ToolError("Name an app.")
         denied = self.denied_apps()
         refused = denied is None or key in {app_key(app) for app in denied} \
-            or self.open_hidden(name, safari_note=True) == "denied"
+            or self.open_hidden(name, browser_note=not window) == "denied"
         if key not in self.logged_apps or refused:
             self.logged_apps.add(key)
             log_approval(self.asker(), name, "decline" if refused else "accept")
@@ -882,6 +1004,10 @@ class Server:
         self.note_other_agents(name)
         self.used_apps.add(key)
         self.windows.send({"watch": [key]})
+        workspace = self.browser_of(key)
+        if workspace and window:
+            with workspace.lock:
+                workspace.reveal_quietly()
         return name
 
     def note_other_agents(self, name):
@@ -894,7 +1020,7 @@ class Server:
             self.windows.note(SHARED_NOTE.format(" and ".join(sorted(set(others))), name))
         self.sessions.got(key, self.asker())
 
-    def open_hidden(self, name, safari_note=False, quiet=False):
+    def open_hidden(self, name, browser_note=False, quiet=False):
         """Open a closed app hidden, and return what became of it."""
         denied = self.denied_apps()
         if denied is None:
@@ -905,8 +1031,8 @@ class Server:
             with self.lock:
                 self.hidden_apps[app_key(name)] = name
             self.windows.note((OPENED_NOTE if reply["state"] == "opened" else REOPENED_NOTE).format(name))
-        elif safari_note and reply.get("active") and app_key(name) in ("safari", "com.apple.safari"):
-            self.windows.note(SAFARI_NOTE)
+        elif browser_note and reply.get("active") and self.browser_of(app_key(name)):
+            self.windows.note(BROWSER_NOTE.format(name, self.browser_of(app_key(name)).tool))
         return reply.get("state")
 
     def put_hidden_apps_on_desktop(self):
@@ -924,6 +1050,9 @@ class Server:
         return bool(reply.get("moved"))
 
     def move_to_desktop(self, app):
+        workspace = self.browser_of(app_key(app))
+        if workspace:  # it would take the user's windows away too
+            return OWN_BROWSER.format(workspace.app, workspace.tool), True
         if self.denied_apps() is None or self.open_hidden(app, quiet=True) == "denied":
             return DENIED.format(app), True
         reply = self.windows.ask({"park": [app]}, PARK_TIMEOUT) or {}
@@ -934,16 +1063,24 @@ class Server:
         return f"{app} is on your private desktop.", False
 
     # --- look and act -----------------------------------------------------
-    @staticmethod
-    def window_id(app, title):
+    def window_id(self, app, title):
         windows = Engine.run("list-windows", "--app", app) or []  # the engine's data is the list itself
         if not title:
             return windows[0]["id"] if windows else None
         found = [window for window in windows if title.casefold() in str(window.get("title")).casefold()]
+        if len(found) > 1:  # the user may have the same page open: the one on this chat's desktop is the agent's
+            found = [window for window in found if self.on_desktop(window)] or found
         if len(found) != 1:
             titles = ", ".join(quoted(str(window.get("title"))) for window in windows)
             raise ToolError(f"{len(found)} windows match {quoted(title)}. Windows: {titles}")
         return found[0]["id"]
+
+    def on_desktop(self, window):
+        box, desktop = window.get("bounds") or {}, self.windows.desktop
+        if not desktop or "x" not in box:
+            return False
+        x, y = box["x"] + box.get("width", 0) / 2, box["y"] + box.get("height", 0) / 2
+        return desktop[0] <= x < desktop[0] + desktop[2] and desktop[1] <= y < desktop[1] + desktop[3]
 
     def snapshot(self, app, title):
         arguments = ["snapshot", "--app", app, "--compact", "--include-bounds", "--timeout-ms", str(SNAPSHOT_TIMEOUT_MS)]
@@ -972,7 +1109,7 @@ class Server:
         return said or "\n".join([f"Window: {view.title}.", *view.lines])
 
     def look(self, arguments):
-        app, title = self.use(arguments.get("app")), arguments.get("window")
+        app, title = self.use(arguments.get("app"), arguments.get("window")), arguments.get("window")
         key = (app_key(app), title)
         content = [{"type": "text", "text": self.show(key, self.read(app, title), bool(arguments.get("full")))}]
         if arguments.get("screenshot"):
@@ -995,7 +1132,8 @@ class Server:
         return {"type": "image", "data": base64.b64encode(picture).decode(), "mimeType": "image/png"}
 
     def act(self, arguments):
-        app, title, steps = self.use(arguments.get("app")), arguments.get("window"), arguments.get("steps")
+        title, steps = arguments.get("window"), arguments.get("steps")
+        app = self.use(arguments.get("app"), title)
         if not isinstance(steps, list) or not steps:
             raise ToolError("Pass at least one step.")
         key = (app_key(app), title)
@@ -1090,9 +1228,13 @@ class Server:
         return view
 
     # --- turn ends and idle stops -----------------------------------------
+    def hide_browsers(self):
+        for workspace in self.browsers.values():
+            workspace.hide()
+
     def stop_helpers(self):
-        """The agent's desktop goes with `ucu-window watch`, so Safari's window has to leave it first."""
-        self.safari.hide()
+        """The agent's desktop goes with `ucu-window watch`, so the browser windows have to leave it first."""
+        self.hide_browsers()
         self.alerts.stop()
         self.windows.stop()
 
@@ -1113,7 +1255,7 @@ class Server:
                                                    and now - self.turn_ended_at >= self.stop_grace)) \
                     and self.windows.process is not None
             if signalled:
-                threading.Thread(target=self.safari.hide, daemon=True).start()
+                threading.Thread(target=self.hide_browsers, daemon=True).start()
                 self.windows.send({"turnEnded": True})
             if stop:
                 self.stop_helpers()
@@ -1127,7 +1269,8 @@ class Server:
         while not self.done.wait(1):  # the timeout keeps signal handlers running promptly
             pass
         self.alerts.stop()
-        self.safari.close_window()
+        for workspace in self.browsers.values():
+            workspace.close_window()
         self.windows.stop()
         self.sessions.remove()
         Engine.end_session()

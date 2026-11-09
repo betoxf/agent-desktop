@@ -14,10 +14,10 @@
 | Capability | What it gives you |
 | --- | --- |
 | Works in the background | Agents click, type and read other apps without moving your pointer or taking focus. |
-| Stays out of your way | A closed app opens hidden, and if an app jumps to the front during an agent's action, your app is put back. |
+| Stays out of your way | A closed app opens hidden, and an app an agent drives can't take your focus or your keyboard. |
 | Has its own desktop | Apps that need clicks by position run on a private desktop you never see. |
 | Clicks anything | A click by position presses the element at that point, or sends raw input to the window, even a canvas with no accessibility tree. |
-| Shares Safari with you | The `safari` tool works in the agent's own hidden window, so you keep your tabs and your keyboard. |
+| Shares your browsers | The `safari` and `chrome` tools work in the agent's own window, so you keep your tabs and your keyboard. |
 | Runs side by side | Each chat has its own engine, and is told when another is using the same app. |
 | Has its own cursors | Each chat gets a cursor color of its own, so you can tell at a glance who is doing what. |
 | Sees every window | Agents are told when an app opens a new window, a sheet or a system dialog, with its text and buttons. |
@@ -115,9 +115,9 @@ The first use of each app by a chat, and every refusal, goes to `~/Library/Logs/
 - `act {app, window?, steps}`: steps in order, then what changed. It stops at the first step that fails.
 - `list_windows {app?}`: the windows of an app, or of every app, and which is the main window.
 - `focus_window {app, title, unfullscreen?, activate?}`: makes a window the main window. With `activate: true`, the app
-  comes to the front, for when you should see it.
+  comes to the front, only to show you something.
 - `move_to_desktop {app}`: moves an app's windows to the agent's private desktop.
-- `safari {op, ...}`: works in Safari in the agent's own window.
+- `safari {op, ...}` and `chrome {op, ...}`: work in Safari and Google Chrome in the agent's own window.
 
 A step is `{do, on, ...}`, where `on` is a number from `look`:
 
@@ -150,9 +150,19 @@ Agents read a hidden app, take screenshots of it and act on its elements as usua
 raw input needs a window on screen, and so do a few actions an app refuses while hidden. For those, UCU moves the app to
 the agent's private desktop.
 
-If an app comes to the front during an agent's call or just after it, and it is an app that chat drives or one that just
-started, UCU puts your app back and tells the agent. If you pressed a key or clicked just before, it does nothing, because
-you may have switched apps yourself.
+Agents never need the front: every action works in the background, and the usage rules tell them to bring an app
+forward only to show you something, never to make an action work, and to leave your clipboard alone. Apps still come forward by themselves, such as Chrome when it
+opens a window, a tab or an extension's popup. If an app a chat drives does that while the chat works or in the 10
+seconds after, UCU puts your app back at once, usually within a hundredth of a second, and tells the agent. When the
+agent's own step is what brings it forward, such as making its Chrome window or tab, that always happens. Otherwise UCU
+leaves the app in front if you clicked, pressed a modifier key, or hold Return just before, or if your app is no longer
+in sight, because you may have switched apps or Spaces yourself. Typing in your app doesn't count, since that is when a
+stolen focus hurts most. A new app that starts during a call is held back too, unless you did anything since just before
+it started.
+
+In an app a chat drives, one of the agent's windows out of sight can become the main window, such as its Chrome window
+when it shows or opens a popup. Your window gets the main role back, so your typing, or your next Command-Tab to that
+app, lands where you can see it. `focus_window` with `activate: true` lets an app come forward only for that call.
 
 ### The private desktop
 
@@ -162,23 +172,39 @@ your pointer won't wander onto it, and it appears in System Settings > Displays 
 
 UCU creates it on first use and removes it 2 minutes after a turn ends, or when the chat closes. If you click such an app
 in the Dock, its windows come back to your screen. If virtual displays are not available, apps are shown behind your
-windows instead.
+windows instead. A window left there when the desktop goes, such as an agent's browser window after a crash, goes to the
+Dock rather than onto your screen.
 
-### Safari
+### Safari and Chrome
 
-Agents use the `safari` tool, and UCU tells them to if they name Safari while you are in it:
+Agents use the `safari` and `chrome` tools, and UCU tells them to if they name the browser while you are in it. Each chat
+works in a window of its own, so you can keep browsing, and several agents can work at once:
 
 - `list` shows every window and tab, yours too.
-- `open` loads a page in a new tab of the agent's own hidden window. Each chat has its own, closed when the chat ends.
-- `navigate`, `read`, `click`, `type`, `wait` and `eval` work in those tabs while the window stays hidden.
-- `shot` takes a screenshot. Safari stops painting hidden windows, so the window moves to the private desktop until the
-  turn ends. Your window keeps the keyboard.
+- `open` loads a page in a new tab of the agent's own window. Each chat has its own, closed when the chat ends.
+- `navigate`, `read`, `click`, `type`, `wait` and `eval` work in those tabs, out of your sight.
+- `upload` gives a page local files without its file picker, which would need the browser in front: they go into a file
+  input as if chosen there, or are dropped on a drop zone. Agents confirm with you first.
+- `shot` takes a screenshot. Your window keeps the keyboard.
 - Changing one of your tabs needs `allow_user_tab`, and the tab you are viewing also needs `allow_current_tab`. Agents are
   told to use those only if you asked.
 
-It needs **Safari > Settings > Advanced > Show features for web developers**, then **Develop > Allow JavaScript from Apple
-Events**, and permission for the app running Claude Code to control Safari. `shot` also needs Screen Recording for that
-app. Clicks and typing are synthetic, so file pickers and some logins ignore them.
+Safari's window stays hidden, and moves to the private desktop for a screenshot until the turn ends, since Safari stops
+painting hidden windows. Chrome's window is on the private desktop whenever the agent works in it, where pages behave as
+on a screen and `look` and `act` reach it by its title, which is how an agent handles Chrome's own controls. It is hidden
+when the turn ends. Chrome comes forward for an instant when it makes the agent's window, once a chat, and UCU puts your
+app back at once. Tabs open blank and go to their page through the page itself, which keeps Chrome behind, when Chrome
+allows JavaScript from Apple Events. An extension's popup closes once Chrome loses focus, so agents open its page in
+their tab instead, at `chrome-extension://<id>/<page>`.
+
+Safari needs **Safari > Settings > Advanced > Show features for web developers**, then **Develop > Allow JavaScript from
+Apple Events**. Chrome needs **View > Developer > Allow JavaScript from Apple Events** for everything that runs in a page.
+Both need permission for the app running Claude Code to control the browser, which macOS asks for the first time, and
+`shot` needs Screen Recording for that app. Clicks and typing are synthetic, so some logins ignore them.
+
+A native Open dialog, such as Chrome's Load unpacked, opens in the background and its sidebar works, but choosing a file
+in it needs the keyboard, so agents ask you to pick it. An unpacked extension loaded once can be reloaded in the background
+from the Reload button on `chrome://extensions`.
 
 ### Several agents
 
@@ -235,7 +261,7 @@ This removes the server, hook, engine and `ucu-window`. Your policy, logs and ba
 | `ucu` | The `install`, `uninstall`, `update`, `doctor`, `deny`, `allow` and `denied` commands. |
 | `scripts/ucu-proxy.py` | The MCP server. It runs the engine, keeps the deny list, renders windows as short text and adds notes. |
 | `native/ucu-window.swift` | `ucu-window list/focus` and `ucu-window watch`, which opens apps hidden, reports new windows, holds the private desktop and draws each chat's cursor. |
-| `native/safari.js` | The Safari side of the `safari` tool, run with `osascript`. |
+| `native/browser.js` | The browser side of the `safari` and `chrome` tools, run with `osascript`. |
 | `..` | agent-desktop, the engine. See `../FORK.md`. |
 
 ## Tests

@@ -159,11 +159,11 @@ class ServerTest(unittest.TestCase):
         self.assertIn("ucu rules:", rules)
         self.assertIn("confirmations", rules)
         names = [tool["name"] for tool in server.request("tools/list")["result"]["tools"]]
-        self.assertEqual(names, ["look", "act", "list_windows", "focus_window", "move_to_desktop", "safari"])
+        self.assertEqual(names, ["look", "act", "list_windows", "focus_window", "move_to_desktop", "safari", "chrome"])
 
     def test_keeps_tool_definitions_and_rules_small(self):
         tools = json.dumps(self.server.request("tools/list")["result"]["tools"])
-        self.assertLess(len(tools), 6000)
+        self.assertLess(len(tools), 6500)  # two browser tools
 
     def test_shows_a_window_as_numbered_text(self):
         text = self.server.text(self.server.look())
