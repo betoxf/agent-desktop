@@ -179,10 +179,13 @@ Each chat that needs one gets a virtual display, called UCU Agent Desktop, 1920 
 screen, so they keep rendering and take clicks, but nobody sees them. It touches your screens at one corner at most, so
 your pointer won't wander onto it, and it appears in System Settings > Displays while it exists.
 
-UCU creates it on first use and removes it 2 minutes after a turn ends, or when the chat closes. If you click such an app
-in the Dock, its windows come back to your screen. If virtual displays are not available, apps are shown behind your
-windows instead. A window left there when the desktop goes, such as an agent's browser window after a crash, goes to the
-Dock rather than onto your screen.
+UCU creates it on first use and removes it 2 minutes after a turn ends, or when the chat closes. A chat whose apps UCU
+opened are still running keeps it between turns instead, with the guard that puts your app back, so none of them can
+come forward over you while the agent is away. When that chat closes, UCU quits the apps it opened and you never took
+over; one asking about unsaved changes stays open, hidden, until you look at it. If you click such an app in the Dock,
+its windows come back to your screen, and the app is yours from then on. If virtual displays are not available, apps are
+shown behind your windows instead. A window left there when the desktop goes, such as an agent's browser window after a
+crash, goes to the Dock rather than onto your screen.
 
 ### Safari and Chrome
 

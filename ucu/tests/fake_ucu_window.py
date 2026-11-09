@@ -3,7 +3,7 @@
 
 Every command and its exit are appended as JSON to $FAKE_WINDOW_LOG, with the time. An app counts as closed if its name
 starts with "Closed", as windowless if it starts with "Empty", and as denied if it is in the request's `deny`. "Safari"
-and "Google Chrome" are active, as if the user were in them. An app with "Stuck" in its name can't move to the agent's desktop. Each line added to
+and "Google Chrome" are active, as if the user were in them. On `rest` it exits, unless it opened an app. An app with "Stuck" in its name can't move to the agent's desktop. Each line added to
 $FAKE_WINDOW_REPORTS goes out as a report. Run without `watch`, it logs its arguments like the other commands.
 """
 import json
@@ -16,6 +16,7 @@ LOG = os.environ["FAKE_WINDOW_LOG"]
 REPORTS = os.environ["FAKE_WINDOW_REPORTS"]
 OPEN_DELAY = 0.2  # opening an app takes a while, and the engine must not get the call before it is done
 parked = set()
+opened = set()  # apps it opened, which keep it running after `rest`
 
 
 def send(message):
@@ -40,6 +41,7 @@ def answer(command):
             state = "denied"
         elif name.startswith("Closed"):
             time.sleep(OPEN_DELAY)
+            opened.add(name)
             state = "opened"
         elif name.startswith("Empty"):
             state = "reopened"
@@ -72,6 +74,8 @@ def main():
         command = json.loads(line)
         log(command)
         answer(command)
+        if "rest" in command and not opened:
+            break
     log({"exited": True})
 
 

@@ -471,6 +471,7 @@ final class AgentCursor {
 //   {"allow": "Blender"}                                bring this app back and let it come to the front just now
 //   {"ours": "Google Chrome"}                           the agent is about to bring this app forward: always undo it
 //   {"who": "claude-code:my-project"}                   the chat, for the focus log
+//   {"rest": true}                                      the turn is over: go, unless this keeps apps ucu opened
 //   {"cursor": "#E5484D"}                               draw the agent's cursor in this color
 //   {"cursorTo": [640, 480]}                            move the cursor to this place on screen
 //   {"turnEnded": true}                                 the turn ended, so the cursor can go
@@ -485,7 +486,7 @@ final class Watcher {
     static let inputWindow = 1.5, longestCall = 300.0, moveSettle = 0.3
     // Apps come forward by themselves seconds after an action too, such as a browser once a page has loaded.
     static let guardTail = 10.0, allowGrace = 5.0, switchWindow = 1.0, modifierWindow = 0.5, focusTick = 0.1
-    static let putBackCheck = 0.1, putBackTries = 3, oursGrace = 3.0
+    static let putBackCheck = 0.1, putBackTries = 3, oursGrace = 3.0, quitWait = 3.0
 
     var watched = Set<String>()
     var driven = [NSRunningApplication]()  // the watched apps that were running when the last call began
@@ -508,6 +509,8 @@ final class Watcher {
     // Apps ucu opened for the agent, which stay out of the user's sight, on the desktop or else hidden, until the user
     // takes one: they can't come forward at any time while the chat runs.
     var launchedHidden = Set<pid_t>()
+    var launchedFresh = Set<pid_t>()  // those that weren't running before: they quit when the chat ends
+    var resting = false  // between turns, this runs only to keep ucu's apps out of sight
     var observers = [pid_t: AXObserver]()  // new windows of parked apps, which join the others on the desktop
     var who = "?"
 
@@ -525,6 +528,8 @@ final class Watcher {
             seenWindows[$0.processIdentifier] = nil
             stopWatchingWindows(of: $0.processIdentifier)
             launchedHidden.remove($0.processIdentifier)
+            launchedFresh.remove($0.processIdentifier)
+            if resting { restIfDone() }
         }
         scanDialogs(reporting: false)
         Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [self] _ in
@@ -545,12 +550,35 @@ final class Watcher {
         exit(0)
     }
 
-    // Without the desktop, macOS moves its windows back to the user's screens, so they are hidden first.
+    // Apps ucu opened for the chat, that weren't running before and that the user hasn't taken over.
+    func keptApps() -> [NSRunningApplication] {
+        launchedFresh.intersection(launchedHidden).compactMap(NSRunningApplication.init(processIdentifier:))
+            .filter { !$0.isTerminated }
+    }
+
+    // Between turns this goes, and the agent's desktop with it, unless it keeps apps ucu opened: with nothing here to
+    // put the user's app back, one of them could come forward over it at any time.
+    func restIfDone() {
+        if resting, keptApps().isEmpty { finish() }
+    }
+
+    // When the chat ends, the apps ucu opened for it are quit, so that none can come forward later with nothing to put
+    // the user's app back. One that won't quit yet, such as one asking about unsaved changes, stays hidden. Without the
+    // desktop, macOS moves its windows back to the user's screens, so they are hidden first.
     func finish() {
-        parked.values.forEach { $0.app.hide() }
-        let tucked = tuckAway()
-        if parked.isEmpty && !tucked { exit(0) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exit(0) }
+        let leaving = keptApps(), started = Date()
+        leaving.forEach { $0.terminate() }
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [self] timer in
+            guard leaving.allSatisfy(\.isTerminated) || -started.timeIntervalSinceNow > Self.quitWait else { return }
+            timer.invalidate()
+            leaving.filter { !$0.isTerminated }.forEach {
+                log("\($0.localizedName ?? "?"), which ucu opened, didn't quit when the chat ended: left hidden")
+            }
+            parked.values.filter { !$0.app.isTerminated }.forEach { $0.app.hide() }
+            let tucked = tuckAway()
+            if parked.isEmpty && !tucked { exit(0) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exit(0) }
+        }
     }
 
     // A window of an app that isn't parked can still be on the desktop, such as an agent's own browser window when the
@@ -579,6 +607,10 @@ final class Watcher {
     func handle(_ command: [String: Any]) {
         if let hex = command["cursor"] as? String { cursor.color = color(hex) }
         if let name = command["who"] as? String { who = name.split(separator: " ").joined(separator: "-") }
+        if command["rest"] != nil {
+            resting = true
+            restIfDone()
+        }
         if command["turnEnded"] != nil { cursor.rest() }
         if let point = command["cursorTo"] as? [Double], point.count == 2 {
             driven = watched.compactMap(running)
@@ -602,6 +634,7 @@ final class Watcher {
             busyUntil = Date() + (busy ? Self.longestCall : Self.quietTail)  // no end comes if the server crashes
             guardUntil = Date() + (busy ? Self.longestCall : Self.guardTail)
             if busy {
+                resting = false
                 busySince = Date()
                 front = NSWorkspace.shared.frontmostApplication
                 driven = watched.compactMap(running)
@@ -669,7 +702,10 @@ final class Watcher {
         configuration.promptsUserIfNeeded = false
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in
             DispatchQueue.main.async { [self] in
-                if let app { launchedHidden.insert(app.processIdentifier) }
+                if let app {
+                    launchedHidden.insert(app.processIdentifier)
+                    if state == "opened" { launchedFresh.insert(app.processIdentifier) }
+                }
                 keepHidden(app, id: id, state: state, limit: limit)
             }
         }

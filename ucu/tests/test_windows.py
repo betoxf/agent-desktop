@@ -201,6 +201,30 @@ class WatchTest(unittest.TestCase):
         proxy.look()
         proxy.end_turn()
         proxy.wait_until(lambda: proxy.commands("exited"))
+        self.assertEqual(len(proxy.commands("rest")), 1)
+
+    def test_starts_the_helper_again_on_the_next_turn(self):
+        proxy = WatchingProxy(self)
+        proxy.look()
+        proxy.end_turn()
+        proxy.wait_until(lambda: proxy.commands("exited"))
+        proxy.look()
+        self.assertEqual(len(proxy.commands("cursor")), 2)
+
+    def test_keeps_the_helper_while_an_app_it_opened_runs(self):
+        proxy = WatchingProxy(self)
+        proxy.look("Closed App")
+        proxy.end_turn()
+        proxy.wait_until(lambda: proxy.commands("rest"))
+        time.sleep(6)  # the server checks every 5 seconds: it must not ask again, nor close the helper
+        self.assertEqual((len(proxy.commands("rest")), proxy.commands("exited")), (1, []))
+        proxy.look()  # the next turn works with the same helper, and can rest it again
+        self.assertEqual(len(proxy.commands("cursor")), 1)
+        proxy.end_turn()
+        proxy.wait_until(lambda: len(proxy.commands("rest")) == 2)
+        proxy.process.stdin.close()  # the chat ends
+        proxy.process.wait(10)
+        proxy.wait_until(lambda: proxy.commands("exited"))
 
     def test_works_without_the_helper(self):
         proxy = Proxy(self)

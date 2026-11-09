@@ -29,7 +29,8 @@ server runs it once per action, and adds what makes it fit for working next to a
 * updates: as it starts, it runs `ucu update --auto` in the background, which brings this clone up to date at most every
   10 minutes and rebuilds what changed. The next chat runs the new version;
 * stops `ucu-window watch` and the log stream once the chat has not used them for --stop-grace seconds after a turn
-  ended (default 120), or --stop-idle seconds in any case (default 900). The Stop hook that `ucu install` adds sends
+  ended (default 120), or --stop-idle seconds in any case (default 900). While apps ucu opened still run, the helper
+  stays, guarding them until the chat ends, when it quits them. The Stop hook that `ucu install` adds sends
   SIGINFO when Claude's turn ends (`pkill -INFO -P $PPID -f ucu-proxy.py`), and without one a turn ends after
   --turn-idle seconds without a call (default 120).
 
@@ -642,6 +643,7 @@ class WindowWatcher:
         self.notes = []    # notes for the next `js` result
         self.expected = {}  # (app_key, "window" or "focus") -> until when the agent knows about such reports
         self.desktop = None  # where the agent's desktop was last seen; it goes with the helper
+        self.rested = None   # the helper told the turn is over: it goes, unless it keeps ucu's apps out of sight
 
     def start(self):
         if self.process is None and not self.unusable:
@@ -670,13 +672,13 @@ class WindowWatcher:
                     slot[0].set()
             elif "event" in message and not self.is_expected(message):
                 self.note(window_note(message))
+        code = process.wait()
         with self.lock:
-            if self.process is process:
-                self.process, self.unusable = None, True
+            if self.process is process:  # one from before it could watch fails at once, and isn't started again
+                self.process, self.unusable = None, code != 0
             waiting, self.waiting = self.waiting, {}
         for slot in waiting.values():
             slot[0].set()
-        process.wait()
 
     def send(self, message):
         with self.lock:
@@ -729,6 +731,13 @@ class WindowWatcher:
             more = len(notes) - WINDOW_NOTES_LIMIT
             notes = notes[:WINDOW_NOTES_LIMIT] + [f"[ucu: and {more} more. Call list_windows to see every window.]"]
         return notes
+
+    def rest(self):
+        """The turn is over: the helper goes, and the agent's desktop with it, unless it still keeps apps ucu opened
+        out of the user's sight, which it then guards until the chat ends."""
+        with self.lock:
+            self.rested = self.process
+        self.send({"rest": True})
 
     def stop(self):
         with self.lock:
@@ -936,6 +945,7 @@ class Server:
         self.write({"id": request_id, "result": {"content": content, "isError": failed}})
 
     def begin(self):
+        self.windows.rested = None  # a resting helper works again
         with self.lock:
             self.running += 1
             self.last_activity = time.monotonic()
@@ -1282,7 +1292,7 @@ class Server:
         """The agent's desktop goes with `ucu-window watch`, so the browser windows have to leave it first."""
         self.hide_browsers()
         self.alerts.stop()
-        self.windows.stop()
+        self.windows.rest()
 
     def housekeeping(self):
         while not self.done.is_set():
@@ -1299,7 +1309,7 @@ class Server:
                         self.turn_ended_at = now
                 stop = (idle >= self.stop_idle or (self.turn_ended_at is not None
                                                    and now - self.turn_ended_at >= self.stop_grace)) \
-                    and self.windows.process is not None
+                    and self.windows.process is not None and self.windows.rested is not self.windows.process
             if signalled:
                 threading.Thread(target=self.hide_browsers, daemon=True).start()
                 self.windows.send({"turnEnded": True})
