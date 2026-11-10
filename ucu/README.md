@@ -22,26 +22,29 @@
 | Has its own cursors | Each chat gets a cursor color of its own, so you can tell at a glance who is doing what. |
 | Sees every window | Agents are told when an app opens a new window, a sheet or a system dialog, with its text and buttons. |
 | Hears errors | When an app plays the macOS alert sound, the agent is told. |
-| Light on tokens | The model reads short numbered text and only what changed. |
+| Light on tokens and round trips | The model reads short numbered text and only what changed, acts by name, and does many steps in one call. |
 | You choose the apps | Every app is approved except the ones you deny, with one command. |
 | Shows who did what | Every app a chat uses is logged with the agent and folder that used it. |
 
 ## How fast it is
 
-One M3 Max with macOS 27.2, on hidden apps. Run it yourself with `python3 -I benchmarks/run.py`.
+One M3 Max with macOS 27.2, on apps on the private desktop. Run it yourself with `python3 -I benchmarks/run.py`.
 
 | Test (median) | UCU |
 | --- | ---: |
-| Start the server | 50 ms |
-| Read a small window (Calculator) | 127 ms |
-| Tokens to read a small window | 148 |
-| A task: `12 + 34 =` and read the answer | 1.3 s |
-| Read a large window (Font Book) | 1.3 s |
-| Tokens to read a large window | 1,953 |
-| Tokens to set up a session | 1,710 |
-| Server memory | 18 MB, plus about 20 MB for each chat's engine while it runs |
+| Start the server | 45 ms |
+| Read a small window (Calculator) | 260 ms |
+| Tokens to read a small window | 169 |
+| A task: `12 + 34 =` and read the answer | 1.8 s |
+| The same task by the buttons' names | 1.8 s, in one call instead of a look and an act |
+| Read a large window (Font Book) | 1.1 s |
+| Tokens to read a large window | 1,403 |
+| Tokens to find one thing in it with `find` | 86 |
+| Tokens to set up a session | 2,288 |
+| Server memory | 23 MB, plus about 20 MB for each chat's engine while it runs |
 
-Tokens are estimated as characters / 4.
+Tokens are estimated as characters / 4. On a long web page, a Wikipedia article in Chrome, a `look` is 4,150 tokens
+where the whole tree is 12,454, a `find` in it 63, and the page's first 300 links and controls are 4,285.
 
 ## Before you use it
 
@@ -111,7 +114,8 @@ The first use of each app by a chat, and every refusal, goes to `~/Library/Logs/
 
 ## Tools
 
-- `look {app, window?, full?, screenshot?}`: an app's window as numbered text, then only what changed.
+- `look {app, window?, find?, full?, screenshot?}`: an app's window as numbered text, then only what changed, up to 300
+  lines. `find` shows only the lines with a text, under what they are inside of, and `full` the whole tree.
 - `act {app, window?, steps}`: steps in order, then what changed. It stops at the first step that fails.
 - `list_windows {app?}`: the windows of an app, or of every app, and which is the main window.
 - `focus_window {app, title, unfullscreen?, activate?}`: makes a window the main window. With `activate: true`, the
@@ -119,16 +123,24 @@ The first use of each app by a chat, and every refusal, goes to `~/Library/Logs/
 - `move_to_desktop {app}`: moves an app's windows to the agent's private desktop.
 - `safari {op, ...}` and `chrome {op, ...}`: work in Safari and Google Chrome in the agent's own window.
 
-A step is `{do, on, ...}`, where `on` is a number from `look`:
+A step is `{do, on, ...}`, where `on` is a number from `look`, or `{do, name, ...}` with the element's name, which needs
+no `look` first:
 
 ```json
-{"app": "Calculator", "steps": [{"do": "click", "on": 15}, {"do": "press", "keys": "Return"}]}
+{"app": "Calculator", "steps": [{"do": "click", "on": 15}, {"do": "click", "name": "Equals"}]}
 ```
 
 `do` is `click`, `double-click`, `right-click`, `triple-click`, `focus`, `toggle`, `check`, `uncheck`, `expand`,
 `collapse`, `clear`, `scroll-to`, `type` or `set-value` (with `text`), `select` (with `text`), `scroll` (with `direction`
-and `amount`) or `press` (with `keys`, and no `on`). For a click where there is no number, pass `xy` with pixels from a
-`look` screenshot.
+and `amount`), `press` (with `keys`), `menu` (with `text` such as `File > New Window`) or `wait` (until `text` shows in
+the window, for up to `amount` seconds). For a click where there is neither number nor name, pass `xy` with pixels from
+a `look` screenshot.
+
+A model's round trip costs far more than the action it asks for, so these are made to save them. A named element is
+looked up in the window as it is now, waited for briefly if a step before brings it, and found again if the window
+changed under it. A name that fits several elements fails with their numbers. `menu` works on an app in the background,
+even a hidden one, and a wrong path answers with what that menu holds. An `act` on a window the model hasn't read
+returns the window, not a diff. A text that only repeats the element it is in, as a link's does, is left out.
 
 When an app rejects an input it plays the macOS alert sound, which a person hears but an agent can't. UCU watches the
 system sound server's log and adds a note to the result. It needs no permission and hears no audio. New windows work the
@@ -195,6 +207,8 @@ works in a window of its own, so you can keep browsing, and several agents can w
 - `list` shows every window and tab, yours too.
 - `open` loads a page in a new tab of the agent's own window. Each chat has its own, closed when the chat ends.
 - `navigate`, `read`, `click`, `type`, `wait` and `eval` work in those tabs, out of your sight.
+- `steps` runs several of these in one call, such as open, type, click, wait and read, and stops at the first that
+  fails. `read` with `what: "interactive"` lists a page's links and controls as one short line each.
 - `upload` gives a page local files without its file picker, which would need the browser in front: they go into a file
   input as if chosen there, or are dropped on a drop zone. Agents confirm with you first.
 - `show` hands you the agent's tab when you ask to see it: its window comes to your screen, in front, and stays yours.

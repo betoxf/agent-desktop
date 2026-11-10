@@ -46,8 +46,17 @@ for _ in range(8):
     ms, said, err, sent = c.tool("act", app="Calculator", steps=steps)
     tasks.append(ms); last = (said, sent)
 print("task ms", int(st.median(tasks)), "tokens", (last[1] + len(last[0])) // 4, "answer ok", "46" in last[0])
+print("  with the look it needs: tokens", (len(text) + last[1] + len(last[0])) // 4, "in 2 calls")
+keys = ["All Clear" if "All Clear" in num else "Clear", "1", "2", "Add", "3", "4", "Equals"]
+named = [c.tool("act", app="Calculator", steps=[{"do": "click", "name": k} for k in keys]) for _ in range(8)]
+print("task by name ms", int(st.median(s[0] for s in named)), "tokens", (named[-1][3] + len(named[-1][1])) // 4,
+      "in 1 call, answer ok", "46" in named[-1][1], named[-1][2])
+found = c.tool("look", app="Calculator", find="Equals")
+print("find one element ms", int(found[0]), "tokens", len(found[1]) // 4)
 big = [c.tool("look", app="Font Book", full=True) for _ in range(5)]
 print("read large ms", int(st.median(s[0] for s in big[1:])), "tokens", len(big[-1][1]) // 4, "lines", big[-1][1].count("\n"), big[-1][2])
+found = c.tool("look", app="Font Book", find="font")
+print("find in large ms", int(found[0]), "tokens", len(found[1]) // 4, "lines", found[1].count("\n"))
 rss = subprocess.run(["ps", "-o", "rss=", "-p", str(c.p.pid)], capture_output=True, text=True).stdout.strip()
 print("server rss MB", int(rss) // 1024)
 c.p.stdin.close(); c.p.wait(10)

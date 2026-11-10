@@ -163,7 +163,7 @@ class ServerTest(unittest.TestCase):
 
     def test_keeps_tool_definitions_and_rules_small(self):
         tools = json.dumps(self.server.request("tools/list")["result"]["tools"])
-        self.assertLess(len(tools), 6500)  # two browser tools
+        self.assertLess(len(tools), 7000)  # two browser tools
 
     def test_shows_a_window_as_numbered_text(self):
         text = self.server.text(self.server.look())
@@ -205,6 +205,59 @@ class ServerTest(unittest.TestCase):
             {"command": "scroll", "args": {"ref_id": "@s1:e1", "direction": "up", "amount": 2}},
             {"command": "press", "args": {"combo": "cmd+n", "app": "Calculator"}}])
 
+    def test_acts_on_an_element_by_its_name_without_a_look(self):
+        reply = self.server.act({"do": "click", "name": "add"}, {"do": "type", "name": "Note", "text": "hello"})
+        self.assertFalse(reply["result"]["isError"], self.server.text(reply))
+        self.assertIn('Window: "Calculator".\nwindow Calculator', self.server.text(reply))  # it never saw the window
+        self.assertEqual(self.server.batched(), [{"command": "click", "args": {"ref_id": "@s1:e1"}},
+                                                 {"command": "type", "args": {"ref_id": "@s1:e2", "text": "hello"}}])
+
+    def test_finds_a_named_element_that_the_steps_before_bring(self):
+        self.server.look()
+        reply = self.server.act({"do": "click", "on": 1}, {"do": "click", "on": 1}, {"do": "click", "name": "Later"})
+        self.assertFalse(reply["result"]["isError"], self.server.text(reply))
+        self.assertEqual(self.server.batched()[-1], {"command": "click", "args": {"ref_id": "@s1:e5"}})
+        self.assertIn("+ 5 button Later", self.server.text(reply))  # all that changed since the look
+
+    def test_finds_a_named_element_again_when_the_window_changed_under_it(self):
+        reply = self.server.act({"do": "click", "name": "Fresh"}, {"do": "click", "name": "Add"}, app="Rebuilt")
+        self.assertFalse(reply["result"]["isError"], self.server.text(reply))
+        self.assertEqual([entry["args"]["ref_id"] for entry in self.server.batched()],
+                         ["@s1:e71", "@s1:e1", "@s1:e72", "@s1:e1"])
+
+    def test_asks_which_one_when_a_name_fits_several(self):
+        reply = self.server.act({"do": "click", "name": "Add"}, app="Twins")
+        self.assertTrue(reply["result"]["isError"])
+        self.assertIn('Step 1 failed: 2 elements are named "Add": 1 button Add; 3 button Add', self.server.text(reply))
+        self.assertEqual(self.server.batched(), [])
+
+    def test_says_when_nothing_has_the_name(self):
+        reply = self.server.act({"do": "click", "name": "Nowhere"})
+        self.assertTrue(reply["result"]["isError"])
+        self.assertIn('Nothing in "Calculator" is named "Nowhere"', self.server.text(reply))
+
+    def test_waits_for_a_text_to_show(self):
+        self.server.look()
+        reply = self.server.act({"do": "click", "on": 1}, {"do": "wait", "text": "display"}, {"do": "click", "on": 1})
+        self.assertFalse(reply["result"]["isError"], self.server.text(reply))
+        self.assertEqual(len(self.server.batched()), 2)
+        late = self.server.act({"do": "wait", "text": "never there", "amount": 1})
+        self.assertIn('didn\'t show "never there" within 1 seconds', self.server.text(late))
+
+    def test_shows_only_the_lines_with_a_text(self):
+        text = self.server.text(self.server.look(find="add"))
+        self.assertEqual(text.splitlines(), ['Window: "Calculator". Lines with "add":', "window Calculator",
+                                             "\t1 button Add"])
+        self.assertIn('Nothing in "Calculator" contains "zzz"', self.server.text(self.server.look(find="zzz")))
+
+    def test_keeps_a_long_window_short_and_says_how_to_see_the_rest(self):
+        lines = self.server.text(self.server.look("Long")).splitlines()
+        self.assertEqual(len(lines), 301)
+        self.assertIn("more lines. Call look with `find`", lines[-1])
+        self.assertEqual(len(self.server.text(self.server.look("Long", full=True)).splitlines()), 405)
+        reply = self.server.act({"do": "click", "name": "Item 400"}, app="Long")  # past what was shown
+        self.assertEqual(self.server.batched()[0], {"command": "click", "args": {"ref_id": "@s1:e400"}})
+
     def test_refuses_a_number_the_window_doesnt_have(self):
         self.server.look()
         reply = self.server.act({"do": "click", "on": 1}, {"do": "click", "on": 7})
@@ -244,7 +297,7 @@ class ServerTest(unittest.TestCase):
     def test_acts_in_a_window_picked_by_title(self):
         reply = self.server.call("act", app="Many", window="Two", steps=[{"do": "click", "on": 1}])
         self.assertFalse(reply["result"]["isError"])
-        self.assertIn("+ statictext 1, Description: Display", self.server.text(reply))
+        self.assertIn('Window: "Many".\nwindow Many\n\tstatictext 1, Description: Display', self.server.text(reply))
         self.assertTrue(all(call[-2:] == ["--window-id", "w-2"] for call in self.server.engine_calls("snapshot")))
 
     def test_answers_when_ucu_itself_fails(self):

@@ -7,13 +7,14 @@
 //   ucu-window focus <app> <title substring> [--unfullscreen] [--activate]
 //   ucu-window unfullscreen <app> <title substring>
 //   ucu-window press <app> <shortcut such as cmd+shift+t>
+//   ucu-window menu <app> <path such as "File > New Window">
 //   ucu-window watch
 //
 // <app> is a display name or bundle id of a running app; `list` without one covers every app.
 // `focus` un-minimizes the window and makes it the app's main window; it shows the app and brings
 // it to the front only with --activate, onto the user's screen if it was out of sight. `press` runs
-// the menu command a shortcut stands for, which works on an app in the background, even a hidden
-// one. `watch` is what the server runs next to the engine: see Watcher.
+// the menu command a shortcut stands for, and `menu` the one at a path, which work on an app in the
+// background, even a hidden one. `watch` is what the server runs next to the engine: see Watcher.
 // Needs Accessibility permission for the process that runs it (Claude Code).
 // Build: `ucu install` (swiftc -O native/ucu-window.swift -o ~/.local/bin/ucu-window)
 import AppKit
@@ -1165,11 +1166,46 @@ func menuItem(for shortcut: String, in element: AXUIElement) -> (AXUIElement, St
     return nil
 }
 
+// Choose the menu command at a path such as "File > New Window". A path that ends at a menu, or goes wrong, fails
+// with what that menu holds, which is how an agent finds a command it doesn't know the name of.
+func chooseMenuItem(at path: String, in element: AXUIElement) -> Never {
+    func plain(_ name: String) -> String {
+        name.lowercased().replacingOccurrences(of: "…", with: "").replacingOccurrences(of: "...", with: "")
+            .trimmingCharacters(in: .whitespaces)
+    }
+    func items(of node: AXUIElement) -> [AXUIElement] {
+        let children: [AXUIElement] = attribute(node, kAXChildrenAttribute) ?? []
+        let menu = children.first { (attribute($0, kAXRoleAttribute) as String?) == kAXMenuRole }
+        return menu.map { attribute($0, kAXChildrenAttribute) ?? [] } ?? children
+    }
+    func names(_ list: [AXUIElement]) -> String {
+        let all = list.compactMap { attribute($0, kAXTitleAttribute) as String? }.filter { !$0.isEmpty }
+        return all.prefix(40).joined(separator: ", ") + (all.count > 40 ? ", and \(all.count - 40) more" : "")
+    }
+    guard let bar: AXUIElement = attribute(element, kAXMenuBarAttribute) else { fail("The app has no menu bar.") }
+    var level = Array(items(of: bar).dropFirst()), here = "The menu bar", found: AXUIElement?  // without the Apple menu
+    for part in path.split(separator: ">").map({ plain(String($0)) }) where !part.isEmpty {
+        guard let next = level.first(where: { plain(attribute($0, kAXTitleAttribute) ?? "") == part }) else {
+            fail("\(here) has no \"\(part)\". It has: \(names(level)).", 2)
+        }
+        found = next
+        here = attribute(next, kAXTitleAttribute) ?? part
+        level = items(of: next)
+    }
+    guard let item = found else { fail("The menu bar has: \(names(level)).", 2) }
+    guard level.isEmpty else { fail("\(here) is a menu. It has: \(names(level)).", 2) }
+    guard (attribute(item, kAXEnabledAttribute) as Bool?) ?? false else { fail("\(here) is disabled right now.", 5) }
+    let pressed = AXUIElementPerformAction(item, kAXPressAction as CFString)
+    guard pressed == .success else { fail("\(here) didn't take the press (\(pressed.rawValue)).", 5) }
+    print("chose \(here)")
+    exit(0)
+}
+
 let watcher = Watcher()
 let args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else {
     fail("usage: ucu-window list [app] | focus <app> <title> [--unfullscreen] [--activate] | "
-        + "unfullscreen <app> <title> | press <app> <shortcut> | watch")
+        + "unfullscreen <app> <title> | press <app> <shortcut> | menu <app> <path> | watch")
 }
 if command == "watch" { watcher.run() }
 if command == "list", args.count == 1 {
@@ -1215,6 +1251,9 @@ case "press":
     let pressed = AXUIElementPerformAction(item, kAXPressAction as CFString)
     guard pressed == .success else { fail("\(path) didn't take the press (\(pressed.rawValue)).", 5) }
     print("pressed \(path)")
+case "menu":
+    guard args.count >= 3 else { fail("usage: ucu-window menu <app> <path>") }
+    chooseMenuItem(at: args[2], in: element)
 default:
     fail("unknown command \(command)")
 }

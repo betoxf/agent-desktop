@@ -50,6 +50,11 @@ def answer(request, state):
         state["windows"] = [window for window in state["windows"] if window["window_id"] != request["window_id"]]
     if op == "select_tab":
         return {"changed": False}
+    if op == "read" and request.get("what") == "interactive":
+        return {"url": "https://a.test/start", "content": [
+            {"ref": "c1", "tag": "a", "text": "Docs", "href": "https://a.test/docs"},
+            {"ref": "c2", "tag": "input", "type": "file", "text": ""},
+            {"ref": "c3", "tag": "a", "text": "Elsewhere", "href": "https://b.test/x"}]}
     if op == "upload":
         return {"uploaded": [file["name"] for file in request["files"]], "into": "input"}
     if op == "hide_window" and os.path.exists(os.path.join(os.environ["HOME"], "window-moved")):

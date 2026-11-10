@@ -95,6 +95,21 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(proxy.commands("args")[0]["args"], ["press", "Calculator", "cmd+k"])
         self.assertEqual([entry["command"] for entry in proxy.batched()], ["click", "click"])
 
+    def test_chooses_a_menu_command_by_its_path(self):
+        proxy = WatchingProxy(self)
+        proxy.look()
+        result = proxy.act({"do": "menu", "text": "File > New Window"}, {"do": "click", "on": 1})
+        self.assertFalse(result["result"]["isError"], proxy.text(result))
+        self.assertEqual(proxy.commands("args")[0]["args"], ["menu", "Calculator", "File > New Window"])
+        self.assertEqual([entry["command"] for entry in proxy.batched()], ["click"])
+
+    def test_passes_on_what_a_menu_holds_when_the_path_is_wrong(self):
+        proxy = WatchingProxy(self)
+        proxy.look("Missing")
+        result = proxy.act({"do": "menu", "text": "File > Nope"}, app="Missing")
+        self.assertTrue(result["result"]["isError"])
+        self.assertIn("Step 1 failed: args: menu Missing File > Nope", proxy.text(result))
+
     def test_sends_keys_for_a_shortcut_no_menu_has(self):
         proxy = WatchingProxy(self)
         proxy.look("Missing")
@@ -529,6 +544,28 @@ class ChromeTest(unittest.TestCase):
         self.assertEqual(proxy.chrome_calls("hide_window")[0]["only_at"]["x"], -1900)
         proxy.wait_until(lambda: "call `open` first" in proxy.chrome(op="read")["content"][0]["text"])
 
+    def test_does_several_operations_in_one_call(self):
+        proxy = WatchingProxy(self)
+        result = proxy.chrome(steps=[{"op": "open", "url": "https://a.test"},
+                                     {"op": "type", "selector": "#q", "text": "x"},
+                                     {"op": "read", "what": "interactive"}])
+        said = result["content"][0]["text"].splitlines()
+        self.assertFalse(result["isError"])
+        self.assertEqual([line.split(":")[0] for line in said], ["1 open", "2 type", "3 read"])
+        self.assertIn('c1 a \\"Docs\\" -> /docs\\nc2 input[file]', said[2])
+        self.assertEqual([call["op"] for call in proxy.chrome_calls()][-3:], ["open_tab", "type", "read"])
+
+    def test_stops_at_the_operation_that_fails_and_says_what_ran(self):
+        proxy = WatchingProxy(self)
+        result = proxy.chrome(steps=[{"op": "open", "url": "https://a.test"},
+                                     {"op": "click", "window_id": 61, "tab_index": 1, "selector": "a"},
+                                     {"op": "read"}])
+        said = result["content"][0]["text"]
+        self.assertTrue(result["isError"])
+        self.assertIn("1 open: ", said)
+        self.assertIn("Step 2 failed: That tab is the user's", said)
+        self.assertEqual(proxy.chrome_calls("read"), [])
+
     def test_doesnt_tell_the_agent_about_the_window_it_just_made(self):
         proxy = WatchingProxy(self)
         proxy.chrome(op="open", url="https://a.test")
@@ -578,9 +615,28 @@ class RenderTest(unittest.TestCase):
         self.proxy = load_proxy()
 
     def test_skips_containers_with_nothing_to_say(self):
-        lines, _refs, _points = self.proxy.render({"tree": {"role": "group", "children": [
+        lines, _refs, _points, labels = self.proxy.render({"tree": {"role": "group", "children": [
             {"role": "button", "name": "OK", "ref_id": "@s:e3"}]}})
         self.assertEqual(lines, ["3 button OK"])
+        self.assertEqual(labels, {3: ("ok", "3 button OK")})
+
+    def test_leaves_out_what_only_repeats_the_element_it_is_in(self):
+        lines = self.proxy.render({"tree": {"role": "webarea", "name": "Page", "children": [
+            {"role": "link", "name": "Gmail ", "ref_id": "@s:e8", "available_actions": ["ScrollTo"], "children": [
+                {"role": "statictext", "name": "Gmail", "available_actions": ["ScrollTo"]}]},
+            {"role": "group", "name": "Total", "children": [{"role": "statictext", "name": "42"}]}]}})[0]
+        self.assertEqual(lines, ["webarea Page", "\t8 link Gmail ", "\tgroup Total", "\t\tstatictext 42"])
+
+    def test_keeps_the_lines_a_found_line_is_inside_of(self):
+        lines = ["window W", "\tgroup A", "\t\t1 button Save", "\tgroup B", "\t\t2 button Open", "\t3 button Save as"]
+        self.assertEqual(self.proxy.containing(lines, "save"),
+                         ["window W", "\tgroup A", "\t\t1 button Save", "\t3 button Save as"])
+
+    def test_writes_a_pages_elements_as_short_lines(self):
+        lines = self.proxy.interactive_lines([
+            {"ref": "c1", "tag": "a", "text": "Docs", "href": "https://a.test/docs"},
+            {"ref": "c2", "tag": "input", "type": "file", "text": ""}], "https://a.test/start")
+        self.assertEqual(lines, 'c1 a "Docs" -> /docs\nc2 input[file] ""')
 
     def test_diffs_keep_numbers_current(self):
         said = self.proxy.changes("Calc", ["1 a", "2 b", "3 c"], ["1 a", "2 b", "3 d"])

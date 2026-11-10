@@ -70,6 +70,9 @@ ENGINE = Path.home() / ".local/bin/ucu-engine"
 ENGINE_TIMEOUT = 45  # seconds for one action
 SNAPSHOT_TIMEOUT_MS = 10000
 SETTLE_READS, SETTLE_WAIT = 3, 0.12  # an app can take a moment to show what an action did
+LOOK_LIMIT = 300      # lines of a window a result shows; `find` and `full` reach the rest
+NAME_WAIT = 2         # seconds an element named in a step has to show up, since it may come from the step before
+WAIT_DEFAULT, WAIT_LIMIT, WAIT_PACE = 10, 120, 0.3  # seconds a `wait` step waits for its text
 CURSOR_PACE = 0.12    # seconds the cursor spends on each step of a run
 POLICY = Path.home() / "Library/Application Support/ucu/policy.json"
 APPROVAL_LOG = Path.home() / "Library/Logs/ucu/approve.log"
@@ -112,14 +115,16 @@ WINDOW_ADVICE = {"sheet": "It is part of its window, so look shows it.",
 WINDOW_NOTES_LIMIT = 3  # a burst of windows should not flood a result
 WINDOW_HELPER = Path.home() / ".local/bin/ucu-window"
 USAGE_RULES = """ucu rules:
-- Call `look` to read an app, then `act` with numbered steps. `act` returns what changed, so don't call `look` after it.
+- Call `look` to read an app, then `act` with numbered steps. `act` returns what changed, so don't call `look` after \
+it, and when you know an element's name, act on it by `name` without looking first.
 - Prefer numbers over positions. Use `xy` for what has no number, with pixels from a `look` screenshot.
 - With several windows, pass part of a title as `window`. Calls for different apps can run together.
 - Everything works in the background. Bring an app to the front only when the user asks to see it or be taken \
 there (focus_window with activate, or `show` in the browser tools), never to make an action work, and never use the \
 clipboard, which is theirs. If something can't be done in the background, ask the user.
 - ucu opens a closed app out of the user's sight. Never use `open`, AppleScript or System Events on apps.
-- For Safari and Chrome, use the `safari` and `chrome` tools: they work in your own window while the user is in theirs.
+- For Safari and Chrome, use the `safari` and `chrome` tools: they work in your own window while the user is in \
+theirs. Put what belongs together in one call's `steps`.
 - If an action has no visible effect, stop and tell the user: remote-desktop and canvas apps can ignore background \
 input.
 - Don't let two agents drive the same app at the same time."""
@@ -130,23 +135,27 @@ SIMPLE_STEPS = ("click", "double-click", "right-click", "triple-click", "focus",
 TEXT_STEPS = {"type": "text", "set-value": "value", "select": "value"}
 WINDOW_TOOLS = [
     {"name": "look",
-     "description": "Read an app's window as numbered text: the whole tree the first time, then what changed. "
-                    "`screenshot` adds a picture, for what the tree doesn't show.",
+     "description": "Read an app's window as numbered text: the tree the first time, then what changed, up to "
+                    f"{LOOK_LIMIT} lines. `find` shows only the lines with that text. `screenshot` adds a picture, "
+                    "for what the tree doesn't show.",
      "inputSchema": {"type": "object", "required": ["app"], "properties": {
-         "app": APP_PROPERTY, "window": WINDOW_PROPERTY,
-         "full": {"type": "boolean", "description": "The whole tree instead of what changed."},
+         "app": APP_PROPERTY, "window": WINDOW_PROPERTY, "find": {"type": "string"},
+         "full": {"type": "boolean", "description": "The whole tree, however long, instead of what changed."},
          "screenshot": {"type": "boolean"}}},
      "annotations": {"readOnlyHint": True}},
     {"name": "act",
      "description": "Do steps in an app, in order, without moving the user's pointer or taking focus, then return what "
                     "changed. It stops at the first step that fails. A step is {do, on, ...}: `do` is "
                     + ", ".join(SIMPLE_STEPS) + ", type or set-value (with text), select (with text), scroll (with "
-                    "direction and optional amount) or press (with keys such as cmd+n or Return, and no `on`). `on` is "
-                    "a number from look. For a click where there is no number, pass xy: [x, y] instead of `on`.",
+                    "direction and optional amount), press (with keys such as cmd+n or Return), menu (with text such "
+                    "as File > New Window) or wait (until text shows, for up to amount seconds). The last three take "
+                    "no `on`. `on` is a number from look; or pass `name`, the element's name, and skip the look. For a "
+                    "click where there is neither, pass xy: [x, y].",
      "inputSchema": {"type": "object", "required": ["app", "steps"], "properties": {
          "app": APP_PROPERTY, "window": WINDOW_PROPERTY,
          "steps": {"type": "array", "items": {"type": "object", "required": ["do"], "properties": {
-             "do": {"type": "string"}, "on": {"type": "integer"}, "text": {"type": "string"},
+             "do": {"type": "string"}, "on": {"type": "integer"}, "name": {"type": "string"},
+             "text": {"type": "string"},
              "keys": {"type": "string"}, "direction": {"enum": ["up", "down", "left", "right"]},
              "amount": {"type": "integer"}, "xy": {"type": "array", "items": {"type": "number"}}}}}}}},
     {"name": "list_windows",
@@ -180,8 +189,9 @@ WINDOW_TOOLS = [
                     "allow_current_tab: only if they asked. Clicks and typing are synthetic, so some logins ignore "
                     "them. `upload` puts files (`paths`) in a file input (ref, or selector, default the first) or "
                     "drops them on an element, with no picker: confirm with the user first. `show` brings your tab to "
-                    "the user, only when they asked to see it; the window is theirs after that.",
-     "inputSchema": {"type": "object", "required": ["op"], "properties": {
+                    "the user, only when they asked to see it; the window is theirs after that. `steps` runs several "
+                    "operations in one call, each {op, ...}, and stops at the first that fails.",
+     "inputSchema": {"type": "object", "properties": {
          "op": {"enum": ["list", "open", "navigate", "read", "click", "type", "wait", "eval", "upload", "shot",
                          "show", "close"]},
          "url": {"type": "string"}, "window_id": {"type": "integer"}, "tab_index": {"type": "integer"},
@@ -189,7 +199,8 @@ WINDOW_TOOLS = [
          "ref": {"type": "string"}, "text": {"type": "string"}, "clear": {"type": "boolean"},
          "submit": {"type": "boolean"}, "script": {"type": "string"}, "max_chars": {"type": "integer"},
          "paths": {"type": "array", "items": {"type": "string"}}, "timeout_seconds": {"type": "number"},
-         "allow_user_tab": {"type": "boolean"}, "allow_current_tab": {"type": "boolean"}}}},
+         "allow_user_tab": {"type": "boolean"}, "allow_current_tab": {"type": "boolean"},
+         "steps": {"type": "array", "items": {"type": "object"}}}}},
 ]
 WINDOW_TOOLS.append(
     {"name": "chrome",
@@ -546,12 +557,30 @@ class BrowserWorkspace:
         return found, size
 
     def run(self, arguments):
-        """Do one operation of the tool and return its MCP content."""
-        op = arguments.get("op")
+        """Do one operation of the tool, or its `steps` in order, and return the MCP content. Several operations in
+        one call save the model a round trip each, which costs far more than the operations do."""
         denied = self.server.denied_apps()
         if denied is None or self.keys & {app_key(app) for app in denied}:
             raise RuntimeError(f"{self.app} is on the user's deny list, or the list can't be read. Tell the user.")
         self.server.windows.send({"watch": [app_key(self.app)]})  # so it can't take the user's focus
+        steps = arguments.get("steps")
+        if steps is None:
+            return self.run_one(arguments)
+        if not isinstance(steps, list) or not steps or not all(isinstance(step, dict) for step in steps):
+            raise RuntimeError("`steps` is a list of operations, each like a call of its own: {op, ...}.")
+        shared = {key: value for key, value in arguments.items() if key not in ("steps", "op")}
+        said, pictures = [], []
+        for number, step in enumerate(steps, 1):
+            try:
+                content = self.run_one({**shared, **step})
+            except (RuntimeError, ToolError) as error:
+                raise RuntimeError("\n".join([*said, f"Step {number} failed: {error}"])) from None
+            said += [f"{number} {step.get('op')}: {item['text']}" for item in content if item["type"] == "text"]
+            pictures += [item for item in content if item["type"] != "text"]
+        return [{"type": "text", "text": "\n".join(said)}, *pictures]
+
+    def run_one(self, arguments):
+        op = arguments.get("op")
         with self.lock:
             if op not in ("list", "close", "shot"):  # a screenshot shows it itself, and waits for it to paint
                 self.reveal_quietly()
@@ -592,8 +621,10 @@ class BrowserWorkspace:
                     allowed["files"], size = self.files(allowed.pop("paths", None))
                     timeout += size / 1_000_000
                 result = self.call({**allowed, **target, "op": self.OPERATIONS[op]}, timeout=timeout)
+                if op == "read" and isinstance(result.get("content"), list) and arguments.get("what") == "interactive":
+                    result["content"] = interactive_lines(result["content"], result.get("url"))
             else:
-                raise RuntimeError(f"Unknown operation {op}")
+                raise RuntimeError(f"Unknown operation {op}. Pass `op`, or `steps`.")
         return [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]
 
     def reveal_quietly(self):
@@ -818,11 +849,27 @@ class Engine:
         return len(entries), None
 
 
+def interactive_lines(elements, page):
+    """A page's interactive elements as one short line each, `ref tag "text" -> link`, a third of them as JSON. A
+    link into the page's own site shows its path only."""
+    site = "/".join(str(page or "").split("/")[:3])
+    lines = []
+    for element in elements:
+        kind = element["tag"] + (f"[{element['type']}]" if element.get("type") and element["tag"] != "a" else "")
+        link = str(element.get("href") or "")
+        link = link[len(site):] or "/" if site and link.startswith(site) else link
+        lines.append(f"{element['ref']} {kind} {quoted(element.get('text') or '')}"
+                     + (f" -> {link[:120]}" if link else ""))
+    return "\n".join(lines)
+
+
 def describe(node):
-    """One element as a person would read it, or None for a container with nothing to say."""
+    """One element as a person would read it, or None for a container with nothing to say. Nearly every element of a
+    web page can be scrolled to, so that isn't worth saying."""
     name, value, about = node.get("name"), node.get("value"), node.get("description")
     states = [state for state in node.get("states") or [] if state != "offscreen"]
-    actions = [action for action in node.get("available_actions") or [] if action not in ("Click", "RightClick", "SetFocus")]
+    actions = [action for action in node.get("available_actions") or []
+               if action not in ("Click", "RightClick", "SetFocus", "ScrollTo")]
     parts = [str(node.get("role") or "element") + (f" ({', '.join(states)})" if states else "")
              + (f" {name}" if name else "")]
     parts += [f"Value: {value}"] if value not in (None, "", name) else []
@@ -832,11 +879,16 @@ def describe(node):
 
 
 def render(snapshot):
-    """Return a snapshot's tree as (lines, number -> ref, number -> middle of the element)."""
-    lines, refs, points = [], {}, {}
+    """Return a snapshot's tree as (lines, number -> ref, number -> middle of the element, number -> (name, line)).
+    A text that only repeats the name of the element it is in is left out: a link reads `8 link Gmail`, not that
+    and `statictext Gmail` under it."""
+    lines, refs, points, labels = [], {}, {}, {}
 
-    def walk(node, depth):
+    def walk(node, depth, above):
         text, ref = describe(node), node.get("ref_id")
+        name = " ".join(str(node.get("name") or "").split())
+        if not ref and node.get("role") == "statictext" and name and name == above and not node.get("children"):
+            return
         if text:
             number = int(ref.rsplit(":e", 1)[1]) if ref else None
             if ref:
@@ -844,12 +896,38 @@ def render(snapshot):
                 box = node.get("bounds")
                 if box:
                     points[number] = (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                label = name or " ".join(str(node.get("description") or "").split())
+                if label:
+                    labels[number] = (label.casefold(), f"{number} {text}")
             lines.append("\t" * depth + (f"{number} {text}" if ref else text))
         for child in node.get("children") or []:
-            walk(child, depth + bool(text))
+            walk(child, depth + bool(text), name or above)
 
-    walk(snapshot.get("tree") or {}, 0)
-    return lines, refs, points
+    walk(snapshot.get("tree") or {}, 0, "")
+    return lines, refs, points, labels
+
+
+def capped(lines, more):
+    """Keep a result within LOOK_LIMIT lines, saying how to get at the rest."""
+    if len(lines) <= LOOK_LIMIT:
+        return lines
+    return [*lines[:LOOK_LIMIT], f"[ucu: {len(lines) - LOOK_LIMIT} more lines. {more}]"]
+
+
+def containing(lines, text):
+    """The lines that contain a text, each under the lines it is inside of, so that it still reads as a tree."""
+    def depth(line):
+        return len(line) - len(line.lstrip("\t"))
+    keep = set()
+    for at, line in enumerate(lines):
+        if text.casefold() in line.casefold():
+            keep.add(at)
+            inside = depth(line)
+            for above in range(at - 1, -1, -1):
+                if depth(lines[above]) < inside:
+                    keep.add(above)
+                    inside = depth(lines[above])
+    return [lines[at] for at in sorted(keep)]
 
 
 def changes(title, before, after):
@@ -862,11 +940,12 @@ def changes(title, before, after):
     gone = [line.strip() for line in before if line not in new]
     if len(added) + len(gone) >= len(after):
         return None
-    return "\n".join([f"Diff of {title} (+ new or changed, - gone):", *(f"+ {line}" for line in added),
-                      *(f"- {line}" for line in gone)])
+    return "\n".join(capped([f"Diff of {title} (+ new or changed, - gone):", *(f"+ {line}" for line in added),
+                             *(f"- {line}" for line in gone)], MORE_NOTE))
 
 
-View = collections.namedtuple("View", "title lines refs points frame")
+MORE_NOTE = "Call look with `find` to search the window, or with full: true for all of it."
+View = collections.namedtuple("View", "title lines refs points frame labels")
 
 
 class Server:
@@ -1134,20 +1213,29 @@ class Server:
 
     def read(self, app, title):
         data = self.snapshot(app, title)
-        lines, refs, points = render(data)
+        lines, refs, points, labels = render(data)
         heading = (data.get("window") or {}).get("title") or app
-        return View(quoted(heading), lines, refs, points, (data.get("tree") or {}).get("bounds"))
+        return View(quoted(heading), lines, refs, points, (data.get("tree") or {}).get("bounds"), labels)
 
-    def show(self, key, view, full=False):
+    def show(self, key, view, full=False, find=None):
         before = self.views.get(key)
         self.views[key] = view
-        said = None if full or before is None else changes(view.title, before.lines, view.lines)
-        return said or "\n".join([f"Window: {view.title}.", *view.lines])
+        if find:
+            found = containing(view.lines, str(find))
+            if not found:
+                return f"Nothing in {view.title} contains {quoted(str(find))}."
+            return "\n".join(capped([f"Window: {view.title}. Lines with {quoted(str(find))}:", *found],
+                                    "Search for something narrower."))
+        if full:
+            return "\n".join([f"Window: {view.title}.", *view.lines])
+        said = None if before is None else changes(view.title, before.lines, view.lines)
+        return said or "\n".join(capped([f"Window: {view.title}.", *view.lines], MORE_NOTE))
 
     def look(self, arguments):
         app, title = self.use(arguments.get("app"), arguments.get("window")), arguments.get("window")
         key = (app_key(app), title)
-        content = [{"type": "text", "text": self.show(key, self.read(app, title), bool(arguments.get("full")))}]
+        said = self.show(key, self.read(app, title), bool(arguments.get("full")), arguments.get("find"))
+        content = [{"type": "text", "text": said}]
         if arguments.get("screenshot"):
             content.append(self.screenshot(app, title, key))
         return content
@@ -1173,30 +1261,40 @@ class Server:
         if not isinstance(steps, list) or not steps:
             raise ToolError("Pass at least one step.")
         key = (app_key(app), title)
-        view = self.views.get(key) or self.read(app, title)
+        seen = self.views.get(key)  # without it the model hasn't read this window, so the result shows all of it
+        view = before = seen or self.read(app, title)
         self.views[key] = view
         index = 0
         while index < len(steps):
-            ending = next((at for at in range(index, len(steps))
-                           if "xy" in steps[at] or self.is_shortcut(steps[at])), len(steps))
+            ending = next((at for at in range(index, len(steps)) if self.runs_alone(steps[at])), len(steps))
+            step = steps[index]
             try:
                 if ending > index:
-                    view, index = self.run_steps(app, view, steps, index, ending)
-                elif self.is_shortcut(steps[index]):
-                    if not self.menu_press(app, steps[index]):  # a shortcut that isn't a menu command: keys, then
-                        view, _ = self.run_steps(app, view, steps, index, index + 1)
-                    index += 1
+                    view, index = self.run_steps(app, title, view, steps, index, ending)
+                    continue
+                if self.is_shortcut(step):
+                    if not self.menu_press(app, step):  # a shortcut that isn't a menu command: keys, then
+                        view, _ = self.run_steps(app, title, view, steps, index, index + 1)
+                elif step.get("do") == "menu":
+                    self.menu(app, step)
+                elif step.get("do") == "wait":
+                    view = self.wait_for(app, title, view, step)
                 else:
-                    view = self.click_at(app, title, key, view, steps[index])
-                    index += 1
+                    view = self.click_at(app, title, key, view, step)
+                index += 1
             except ToolError as error:
                 if str(error).startswith("Step "):
                     raise
                 done = f" The {index} before it ran." if index else ""
                 raise ToolError(f"Step {index + 1} failed: {error}{done}") from None
-        return [{"type": "text", "text": self.settled(app, title, key, view)}]
+        return [{"type": "text", "text": self.settled(app, title, key, before, whole=seen is None)}]
 
-    def settled(self, app, title, key, before):
+    @classmethod
+    def runs_alone(cls, step):
+        """Whether a step is one the engine can't take in a run with others."""
+        return "xy" in step or cls.is_shortcut(step) or step.get("do") in ("menu", "wait")
+
+    def settled(self, app, title, key, before, whole=False):
         said = None
         for attempt in range(SETTLE_READS):
             view = self.read(app, title)
@@ -1205,7 +1303,59 @@ class Server:
                 break
             time.sleep(SETTLE_WAIT)
         self.views[key] = view
-        return said or "\n".join([f"Window: {view.title}.", *view.lines])
+        return said if said and not whole else "\n".join(capped([f"Window: {view.title}.", *view.lines], MORE_NOTE))
+
+    @staticmethod
+    def named(view, name):
+        """The number of the element with this name in a view, or None. The whole name counts before a part of it."""
+        wanted = " ".join(str(name).split()).casefold()
+        found = [number for number, (label, _line) in view.labels.items() if label == wanted] \
+            or [number for number, (label, _line) in view.labels.items() if wanted and wanted in label]
+        if len(found) > 1:
+            some = "; ".join(view.labels[number][1] for number in found[:8])
+            raise ToolError(f"{len(found)} elements are named {quoted(str(name))}: {some}. Pass the one you mean as "
+                            "`on`.")
+        return found[0] if found else None
+
+    def find_named(self, app, title, view, name):
+        """Return the view an element with this name is in, and its number. The window is read again when it isn't
+        there, and for a moment more: the model may not have looked, and a step before may be what brings it."""
+        until = time.monotonic() + NAME_WAIT
+        while True:
+            number = self.named(view, name)
+            if number is not None:
+                return view, number
+            if time.monotonic() > until:
+                raise ToolError(f"Nothing in {view.title} is named {quoted(str(name))}. Call look, with `find` if the "
+                                "window is long.")
+            view = self.read(app, title)
+            if self.named(view, name) is None:
+                time.sleep(WAIT_PACE)
+
+    def wait_for(self, app, title, view, step):
+        """Read the window until it shows a text, so the model needn't look again and again."""
+        wanted, seconds = str(step.get("text") or ""), min(float(step.get("amount") or WAIT_DEFAULT), WAIT_LIMIT)
+        if not wanted:
+            raise ToolError("wait needs `text`: what the window should show.")
+        until = time.monotonic() + seconds
+        while True:
+            view = self.read(app, title)
+            if any(wanted.casefold() in line.casefold() for line in view.lines):
+                return view
+            if time.monotonic() > until:
+                raise ToolError(f"{view.title} didn't show {quoted(wanted)} within {seconds:g} seconds.")
+            time.sleep(WAIT_PACE)
+
+    @staticmethod
+    def menu(app, step):
+        """Choose a menu command by its path, which works on an app in the background, even a hidden one."""
+        try:
+            done = subprocess.run([str(WINDOW_HELPER), "menu", app, str(step.get("text") or "")],
+                                  capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ToolError(f"ucu-window could not run ({error}); `ucu install` builds it") from None
+        if done.returncode:
+            raise ToolError((done.stderr or done.stdout).strip() or "The menu didn't take it.")
 
     @staticmethod
     def entry(app, view, step):
@@ -1214,7 +1364,7 @@ class Server:
         if kind == "press":
             return {"command": "press", "args": {"combo": str(step.get("keys") or ""), "app": app}}
         if number is None:
-            raise ToolError(f"{kind} needs `on`, with a number from look.")
+            raise ToolError(f"{kind} needs `on`, a number from look, or `name`, the element's name.")
         ref = view.refs.get(number)
         if ref is None:
             raise ToolError(f"There is no element {number}. {STALE_NOTE}")
@@ -1227,21 +1377,32 @@ class Server:
                                                   "amount": int(step.get("amount") or 3)}}
         raise ToolError(f"Unknown step {kind}.")
 
-    def run_steps(self, app, view, steps, index, ending):
+    def run_steps(self, app, title, view, steps, index, ending, tried=None):
         """Run a stretch of steps in one engine run, far faster than one run each, with the cursor going through them
-        at about the same pace. Return the view and where the next step is."""
-        entries = []
+        at about the same pace. Return the view and where the next step is. A step that names its element gets the
+        number the element has now; one that isn't there yet ends the stretch, since the steps before may bring it.
+        If the window changed since it was read, the element's old number fails, and the name finds it again."""
+        entries, points, named = [], [], set()
         for at in range(index, ending):
+            step = steps[at]
             try:
-                entries.append(self.entry(app, view, steps[at]))
+                if step.get("on") is None and step.get("name") is not None and step.get("do") != "press":
+                    if entries and self.named(view, step["name"]) is None:
+                        raise ToolError("not there yet")
+                    view, number = self.find_named(app, title, view, step["name"])
+                    step = {**step, "on": number}
+                    named.add(at)
+                entries.append(self.entry(app, view, step))
             except ToolError:
                 if not entries:
                     raise
                 ending = at
                 break
-        points = [view.points[step["on"]] for step in steps[index:ending] if step.get("on") in view.points]
+            points += [view.points[step["on"]]] if step.get("on") in view.points else []
         threading.Thread(target=self.trail, args=(points,), daemon=True).start()
         ran, failure = Engine.batch(entries)
+        if failure and index + ran in named and index + ran != tried:
+            return self.run_steps(app, title, self.read(app, title), steps, index + ran, ending, tried=index + ran)
         if failure:
             raise ToolError(f"Step {index + ran + 1} failed: {failure}" + (f" The {index + ran} before it ran."
                                                                           if index + ran else ""))
