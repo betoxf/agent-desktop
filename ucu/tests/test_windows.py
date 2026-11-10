@@ -27,10 +27,7 @@ class WatchingProxy(Proxy):
         path.write_text(f'#!/bin/sh\nexec "{sys.executable}" -I "{ROOT / "tests/fake_ucu_window.py"}" "$@"\n')
         path.chmod(0o755)
         (self.tools / "osascript").write_text(f'#!/bin/sh\nexec "{sys.executable}" -I "{ROOT / "tests/fake_osascript.py"}" "$@"\n')
-        (self.tools / "screencapture").write_text(
-            '#!/bin/sh\necho "$@" > "$HOME/screencapture.args"\nfor last; do :; done\nprintf picture > "$last"\n')
         (self.tools / "osascript").chmod(0o755)
-        (self.tools / "screencapture").chmod(0o755)
         self.initialize()
 
     def safari(self, **arguments):
@@ -615,7 +612,7 @@ class RenderTest(unittest.TestCase):
         self.proxy = load_proxy()
 
     def test_skips_containers_with_nothing_to_say(self):
-        lines, _refs, _points, labels = self.proxy.render({"tree": {"role": "group", "children": [
+        lines, _refs, _points, labels, _kinds = self.proxy.render({"tree": {"role": "group", "children": [
             {"role": "button", "name": "OK", "ref_id": "@s:e3"}]}})
         self.assertEqual(lines, ["3 button OK"])
         self.assertEqual(labels, {3: ("ok", "3 button OK")})
@@ -631,6 +628,12 @@ class RenderTest(unittest.TestCase):
         lines = ["window W", "\tgroup A", "\t\t1 button Save", "\tgroup B", "\t\t2 button Open", "\t3 button Save as"]
         self.assertEqual(self.proxy.containing(lines, "save"),
                          ["window W", "\tgroup A", "\t\t1 button Save", "\t3 button Save as"])
+
+    def test_shrinks_the_picture_of_a_window_larger_than_models_read(self):
+        self.assertEqual(self.proxy.picture_scale({"width": 230, "height": 408}), 1)
+        scale = self.proxy.picture_scale({"width": 1512, "height": 982})
+        self.assertLessEqual(1512 * scale * 982 * scale, 1_150_001)
+        self.assertAlmostEqual(self.proxy.picture_scale({"width": 3000, "height": 300}), 1568 / 3000)
 
     def test_writes_a_pages_elements_as_short_lines(self):
         lines = self.proxy.interactive_lines([

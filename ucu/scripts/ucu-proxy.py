@@ -8,7 +8,9 @@ agent-desktop, the engine in this repository, which `ucu install` builds and cop
 server runs it once per action, and adds what makes it fit for working next to a person:
 
 * `look` and `act`: an app's accessibility tree as short numbered text, the changes since the last look instead of the
-  whole tree, and steps that end with what they changed, so a task takes few round trips and few tokens;
+  whole tree, and steps that end with what they changed, so a task takes few round trips and few tokens. A step that
+  fails says why in terms of these tools, with the window as it is now when the agent needs it to go on, and a
+  screenshot is a picture that models read as it is, so its pixels are places in the window;
 * a deny list: ~/Library/Application Support/ucu/policy.json holds the apps agents can't touch, read at every call. Each
   app a chat starts using goes to ~/Library/Logs/ucu/approve.log with the client and folder. If the file can't be read,
   no app is used;
@@ -69,7 +71,11 @@ UPLOAD_LIMIT = 50_000_000  # bytes a page gets in one upload
 ENGINE = Path.home() / ".local/bin/ucu-engine"
 ENGINE_TIMEOUT = 45  # seconds for one action
 SNAPSHOT_TIMEOUT_MS = 10000
-SETTLE_READS, SETTLE_WAIT = 3, 0.12  # an app can take a moment to show what an action did
+SETTLE = 0.4          # seconds an app has to show what the steps did, before a window without a change is believed
+SHOT_EDGE, SHOT_AREA = 1568, 1_150_000  # the longest side and the pixels of a picture that models read unshrunk
+GESTURES = {"double-click": {"count": 2}, "triple-click": {"count": 3}, "right-click": {"button": "right"}}
+GONE_CODES = ("STALE_REF", "ELEMENT_NOT_FOUND", "SNAPSHOT_NOT_FOUND")
+INVALID_ELEMENT = -25202  # what the accessibility API says of an element that is gone
 LOOK_LIMIT = 300      # lines of a window a result shows; `find` and `full` reach the rest
 NAME_WAIT = 2         # seconds an element named in a step has to show up, since it may come from the step before
 WAIT_DEFAULT, WAIT_LIMIT, WAIT_PACE = 10, 120, 0.3  # seconds a `wait` step waits for its text
@@ -105,7 +111,14 @@ FOCUS_NOTE = ("[ucu: {} came to the front during your actions, so ucu put {} bac
               "that the app did what you meant.]")
 WINDOW_FOCUS_NOTE = ("[ucu: {} gave one of your windows the user's keyboard, so ucu gave it back to their window. "
                      "Check that the app did what you meant.]")
-STALE_NOTE = "Numbers change with the window: call look and use the new number."
+# The engine's errors in the words of ucu's tools. Its own advice names its commands, which an agent here doesn't
+# have, so that is passed on only when it names none.
+ENGINE_WORDS = {"APP_NOT_FOUND": "{} Use the name the app shows in its menu bar, or its bundle id.",
+                "WINDOW_NOT_FOUND": "That window is gone. list_windows shows the ones there are.",
+                "APP_UNRESPONSIVE": "The app didn't answer. Try again in a moment.",
+                "TIMEOUT": "The app didn't answer in time.",
+                "PERM_DENIED": "{} It is the user's to grant: tell them that `ucu doctor` shows what is missing."}
+ENGINE_TALK = re.compile(r"--\w|'[\w-]+'|snapshot|list-\w|focus-window|agent-desktop|available_actions|\bref\b|locator")
 BUG_NOTE = ("ucu hit a bug and stopped this call ({}). An action may already have happened: check the app before "
             "repeating it, and tell the user.")
 WINDOW_ADVICE = {"sheet": "It is part of its window, so look shows it.",
@@ -524,20 +537,7 @@ class BrowserWorkspace:
             time.sleep(SAFARI_PAINT)
         if self.call({"op": "select_tab", **target})["changed"]:
             time.sleep(SAFARI_PAINT)
-        number = self.window_number()
-        handle, name = tempfile.mkstemp(suffix=".jpg")
-        os.close(handle)
-        try:
-            done = subprocess.run(["screencapture", "-x", "-o", "-t", "jpg", f"-l{number}", name],
-                                  capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=SHOT_TIMEOUT)
-            data = Path(name).read_bytes()
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("Could not capture the window in time.") from None
-        finally:
-            Path(name).unlink(missing_ok=True)
-        if done.returncode != 0 or not data:
-            raise RuntimeError("Could not capture the window. The app running this needs Screen Recording permission.")
-        return [{"type": "image", "data": base64.b64encode(data).decode(), "mimeType": "image/jpeg"}]
+        return [window_picture(self.window_number(), self.place)]
 
     @staticmethod
     def files(paths):
@@ -781,7 +781,15 @@ class WindowWatcher:
 
 
 class ToolError(Exception):
-    """What the agent should read when a tool can't do what it was asked."""
+    """What the agent should read when a tool can't do what it was asked. From the engine it has the engine's `code`
+    and `raw` message, and `needs_place` if the element takes the click only where it is on screen. In an act it
+    has `at`, the step that it stopped, and `on`, that step's element."""
+    code = raw = at = on = None
+    needs_place = False
+
+
+class Gone(ToolError):
+    """A step's element isn't in the window any more, so the agent needs the window as it is now."""
 
 
 class Engine:
@@ -827,26 +835,71 @@ class Engine:
         except ValueError:
             raise ToolError((done.stderr or done.stdout).strip()[:500] or "ucu-engine gave no answer") from None
         if not reply.get("ok"):
-            raise ToolError(cls.explain(reply.get("error") or {}))
+            raise cls.failure(reply.get("error") or {})
         return reply.get("data") or {}
 
     @staticmethod
-    def explain(error):
-        parts = [str(error.get("message") or error.get("code") or "The action failed.")]
-        if error.get("code") in ("STALE_REF", "ELEMENT_NOT_FOUND"):
-            parts.append(STALE_NOTE)
-        elif error.get("suggestion"):
-            parts.append(str(error["suggestion"]))
-        return " ".join(parts)
+    def failure(error):
+        """An engine error as a ToolError in ucu's words. "It" is the element, which an act names in its place."""
+        code, details = error.get("code"), error.get("details") or {}
+        message, advice = str(error.get("message") or code or "The action failed."), str(error.get("suggestion") or "")
+        checks = ((details.get("last_report") or {}).get("report") or details).get("checks") or []
+        failed = {check.get("check"): str(check.get("reason") or "") for check in checks
+                  if check.get("status") == "fail"}
+        reasons = [reason for reason in failed.values() if reason and "fallback" not in reason]
+        if code in GONE_CODES or details.get("ax_error") == INVALID_ELEMENT:
+            problem = Gone("It is no longer in the window.")
+        elif "enabled" in failed:
+            problem = ToolError("It is disabled.")
+        elif failed:
+            problem = ToolError("It can't do that" + (f": {'; '.join(reasons)}." if reasons else " in the background."))
+        elif code in ENGINE_WORDS:
+            problem = ToolError(ENGINE_WORDS[code].format(message.rstrip(".") + "."))
+        else:
+            keep = advice and not ENGINE_TALK.search(advice)
+            problem = ToolError(message + (("" if message[-1:] in ".!?" else ".") + f" {advice}" if keep else ""))
+        problem.code, problem.raw = code, message
+        problem.needs_place = any("physical fallback" in reason for reason in failed.values())
+        return problem
 
     @classmethod
     def batch(cls, entries):
-        """Run commands in one engine run, in order; return how many ran, and the error that stopped them."""
+        """Run commands in one engine run, in order; return how many ran, and the ToolError that stopped them."""
         data = cls.run("batch", json.dumps(entries), "--stop-on-error")
         for index, result in enumerate(data.get("results") or []):
             if not result.get("ok"):
-                return index, cls.explain(result.get("error") or {})
+                return index, cls.failure(result.get("error") or {})
         return len(entries), None
+
+
+def picture_scale(frame):
+    """How many pixels of a window's picture make one point of the window: one, or fewer for a window larger than
+    models read as it is. A larger picture is shrunk on its way to the model, which then points at other places
+    than it means."""
+    width, height = max(frame["width"], 1), max(frame["height"], 1)
+    return min(1, SHOT_EDGE / max(width, height), (SHOT_AREA / (width * height)) ** 0.5)
+
+
+def window_picture(number, frame):
+    """A window's picture for the agent, from the window server's number for it and its frame: without its shadow,
+    as a JPEG, and picture_scale pixels to a point, so that a place in the picture is a place in the window."""
+    scale = picture_scale(frame)
+    size = [str(round(frame[side] * scale)) for side in ("height", "width")]
+    with tempfile.TemporaryDirectory() as folder:
+        raw, small = Path(folder) / "window.png", Path(folder) / "window.jpg"
+        try:
+            subprocess.run(["screencapture", "-x", "-o", "-t", "png", f"-l{number}", str(raw)], capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=SHOT_TIMEOUT)
+            subprocess.run(["sips", "-s", "format", "jpeg", "-s", "formatOptions", "80", "-z", *size, str(raw),
+                            "--out", str(small)], capture_output=True, stdin=subprocess.DEVNULL, timeout=SHOT_TIMEOUT)
+            data = small.read_bytes()
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Could not capture the window in time.") from None
+        except OSError:
+            data = b""
+    if not data:
+        raise RuntimeError("Could not capture the window. The app running this needs Screen Recording permission.")
+    return {"type": "image", "data": base64.b64encode(data).decode(), "mimeType": "image/jpeg"}
 
 
 def interactive_lines(elements, page):
@@ -879,10 +932,10 @@ def describe(node):
 
 
 def render(snapshot):
-    """Return a snapshot's tree as (lines, number -> ref, number -> middle of the element, number -> (name, line)).
-    A text that only repeats the name of the element it is in is left out: a link reads `8 link Gmail`, not that
-    and `statictext Gmail` under it."""
-    lines, refs, points, labels = [], {}, {}, {}
+    """Return a snapshot's tree as (lines, number -> ref, number -> middle of the element, number -> (name, line),
+    number -> (role, name)). A text that only repeats the name of the element it is in is left out: a link reads
+    `8 link Gmail`, not that and `statictext Gmail` under it."""
+    lines, refs, points, labels, kinds = [], {}, {}, {}, {}
 
     def walk(node, depth, above):
         text, ref = describe(node), node.get("ref_id")
@@ -897,6 +950,7 @@ def render(snapshot):
                 if box:
                     points[number] = (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
                 label = name or " ".join(str(node.get("description") or "").split())
+                kinds[number] = (str(node.get("role") or "element"), label)
                 if label:
                     labels[number] = (label.casefold(), f"{number} {text}")
             lines.append("\t" * depth + (f"{number} {text}" if ref else text))
@@ -904,7 +958,7 @@ def render(snapshot):
             walk(child, depth + bool(text), name or above)
 
     walk(snapshot.get("tree") or {}, 0, "")
-    return lines, refs, points, labels
+    return lines, refs, points, labels, kinds
 
 
 def capped(lines, more):
@@ -945,7 +999,7 @@ def changes(title, before, after):
 
 
 MORE_NOTE = "Call look with `find` to search the window, or with full: true for all of it."
-View = collections.namedtuple("View", "title lines refs points frame labels")
+View = collections.namedtuple("View", "title lines refs points frame labels kinds window")
 
 
 class Server:
@@ -964,7 +1018,6 @@ class Server:
         self.hidden_apps = {}               # apps ucu opened and still keeps out of sight, app_key -> name
         self.parked_apps = set()            # those of them on the agent's desktop, as app_key names
         self.views = {}                     # (app, window) -> the last View
-        self.shots = {}                     # (app, window) -> (scale, margin x, margin y) of the last screenshot
         self.running = 0                    # tool calls in flight
         self.last_end = 0
         self.last_activity = time.monotonic()
@@ -1186,9 +1239,12 @@ class Server:
         if len(found) > 1:  # the user may have the same page open: the one on this chat's desktop is the agent's
             found = [window for window in found if self.on_desktop(window)] or found
         if len(found) != 1:
-            titles = ", ".join(quoted(str(window.get("title"))) for window in windows)
-            raise ToolError(f"{len(found)} windows match {quoted(title)}. Windows: {titles}")
+            raise ToolError(f"{len(found)} windows match {quoted(title)}. {self.titles(windows)}")
         return found[0]["id"]
+
+    @staticmethod
+    def titles(windows):
+        return "Windows: " + ", ".join(quoted(str(window.get("title"))) for window in windows)
 
     def on_desktop(self, window):
         box, desktop = window.get("bounds") or {}, self.windows.desktop
@@ -1197,25 +1253,33 @@ class Server:
         x, y = box["x"] + box.get("width", 0) / 2, box["y"] + box.get("height", 0) / 2
         return desktop[0] <= x < desktop[0] + desktop[2] and desktop[1] <= y < desktop[1] + desktop[3]
 
-    def snapshot(self, app, title):
+    def snapshot(self, app, window):
+        """Read a window by its id, or the app's main window without one. look and act find a window that was named
+        by its title once per call, which is one engine run and not one per read, and which holds when a step
+        changes the title, as a page that loads does."""
         arguments = ["snapshot", "--app", app, "--compact", "--include-bounds", "--timeout-ms", str(SNAPSHOT_TIMEOUT_MS)]
-        if title:
-            return Engine.run(*arguments, "--window-id", self.window_id(app, title))
+        if window:
+            return Engine.run(*arguments, "--window-id", window)
         try:
             return Engine.run(*arguments)
         except ToolError as error:
-            if "window" not in str(error).casefold():
+            if "window" not in str(error.raw).casefold():
                 raise
             identifier = self.window_id(app, None)
             if identifier is None:
                 raise
             return Engine.run(*arguments, "--window-id", identifier)
 
-    def read(self, app, title):
-        data = self.snapshot(app, title)
-        lines, refs, points, labels = render(data)
-        heading = (data.get("window") or {}).get("title") or app
-        return View(quoted(heading), lines, refs, points, (data.get("tree") or {}).get("bounds"), labels)
+    def read(self, app, window):
+        data = self.snapshot(app, window)
+        lines, refs, points, labels, kinds = render(data)
+        found = data.get("window") or {}
+        return View(quoted(found.get("title") or app), lines, refs, points, (data.get("tree") or {}).get("bounds"),
+                    labels, kinds, found.get("id"))
+
+    @staticmethod
+    def whole(view):
+        return "\n".join(capped([f"Window: {view.title}.", *view.lines], MORE_NOTE))
 
     def show(self, key, view, full=False, find=None):
         before = self.views.get(key)
@@ -1228,32 +1292,19 @@ class Server:
                                     "Search for something narrower."))
         if full:
             return "\n".join([f"Window: {view.title}.", *view.lines])
-        said = None if before is None else changes(view.title, before.lines, view.lines)
-        return said or "\n".join(capped([f"Window: {view.title}.", *view.lines], MORE_NOTE))
+        return (None if before is None else changes(view.title, before.lines, view.lines)) or self.whole(view)
 
     def look(self, arguments):
         app, title = self.use(arguments.get("app"), arguments.get("window")), arguments.get("window")
-        key = (app_key(app), title)
-        said = self.show(key, self.read(app, title), bool(arguments.get("full")), arguments.get("find"))
+        view = self.read(app, self.window_id(app, title) if title else None)
+        said = self.show((app_key(app), title), view, bool(arguments.get("full")), arguments.get("find"))
         content = [{"type": "text", "text": said}]
         if arguments.get("screenshot"):
-            content.append(self.screenshot(app, title, key))
+            number = re.fullmatch(r"w-(\d+)", str(view.window))
+            if not number or not view.frame:
+                raise ToolError("This window has no picture to take.")
+            content.append(window_picture(int(number.group(1)), view.frame))
         return content
-
-    def screenshot(self, app, title, key):
-        handle, name = tempfile.mkstemp(suffix=".png")
-        os.close(handle)
-        Path(name).unlink()
-        try:
-            arguments = ["screenshot", name, "--app", app]
-            data = Engine.run(*arguments, *(("--window-id", self.window_id(app, title)) if title else ()))
-            picture = Path(name).read_bytes()
-        finally:
-            Path(name).unlink(missing_ok=True)
-        scale, frame = data.get("scale_factor") or 1, self.views[key].frame or {}
-        self.shots[key] = (scale, max(0, (data.get("width", 0) / scale - frame.get("width", 0)) / 2),
-                           max(0, (data.get("height", 0) / scale - frame.get("height", 0)) / 2))
-        return {"type": "image", "data": base64.b64encode(picture).decode(), "mimeType": "image/png"}
 
     def act(self, arguments):
         title, steps = arguments.get("window"), arguments.get("steps")
@@ -1261,49 +1312,95 @@ class Server:
         if not isinstance(steps, list) or not steps:
             raise ToolError("Pass at least one step.")
         key = (app_key(app), title)
-        seen = self.views.get(key)  # without it the model hasn't read this window, so the result shows all of it
-        view = before = seen or self.read(app, title)
-        self.views[key] = view
+        window = self.window_id(app, title) if title else None
+        seen = self.views.get(key)  # without it the agent hasn't read this window, so the result shows all of it
+        view = before = seen or self.read(app, window)
         index = 0
         while index < len(steps):
             ending = next((at for at in range(index, len(steps)) if self.runs_alone(steps[at])), len(steps))
-            step = steps[index]
+            step, fresh = steps[index], None
             try:
                 if ending > index:
-                    view, index = self.run_steps(app, title, view, steps, index, ending)
+                    view, index = self.run_steps(app, window, before, view, steps, index, ending)
                     continue
                 if self.is_shortcut(step):
                     if not self.menu_press(app, step):  # a shortcut that isn't a menu command: keys, then
-                        view, _ = self.run_steps(app, title, view, steps, index, index + 1)
+                        view, _ = self.run_steps(app, window, before, view, steps, index, index + 1)
                 elif step.get("do") == "menu":
                     self.menu(app, step)
                 elif step.get("do") == "wait":
-                    view = self.wait_for(app, title, view, step)
+                    view = fresh = self.wait_for(app, window, step)
                 else:
-                    view = self.click_at(app, title, key, view, step)
+                    view = self.click_at(app, window, view, step)
                 index += 1
             except ToolError as error:
-                if str(error).startswith("Step "):
-                    raise
-                done = f" The {index} before it ran." if index else ""
-                raise ToolError(f"Step {index + 1} failed: {error}{done}") from None
-        return [{"type": "text", "text": self.settled(app, title, key, before, whole=seen is None)}]
+                raise self.failed(app, window, key, seen, before, steps, index, error) from None
+        said = self.settled(app, window, key, before, whole=seen is None, fresh=fresh)
+        return [{"type": "text", "text": said}]
 
     @classmethod
     def runs_alone(cls, step):
         """Whether a step is one the engine can't take in a run with others."""
         return "xy" in step or cls.is_shortcut(step) or step.get("do") in ("menu", "wait")
 
-    def settled(self, app, title, key, before, whole=False):
-        said = None
-        for attempt in range(SETTLE_READS):
-            view = self.read(app, title)
+    def failed(self, app, window, key, seen, before, steps, index, error):
+        """What a failed act says: the step, its element and why. When steps before it ran, or its number is out of
+        date, the window as it is now follows, so that the agent can go on without a look."""
+        at = index if error.at is None else error.at
+        said, on = str(error), error.on or self.words(before, steps[at].get("on"))
+        if on and said.startswith("It "):
+            said = f"{on} {said[3:]}"
+        said = f"Step {at + 1} failed: {said}" + (f" The {at} before it ran." if at else "")
+        if at or isinstance(error, Gone):
+            try:
+                now = self.settled(app, window, key, before, whole=seen is None)
+                if isinstance(error, Gone) and now.startswith("No change"):
+                    now = self.whole(self.views[key])  # the agent's numbers aren't this window's
+                said += "\n" + now
+            except ToolError:
+                pass
+        return ToolError(said)
+
+    def settled(self, app, window, key, before, whole=False, fresh=None):
+        """Read what the steps did, and say it. An app can take a moment to show it, so a window without a change
+        is read once more, SETTLE seconds after the steps. `fresh` is a reading made since the last step. A window
+        that is gone was closed by the steps, which is their result and not a failure."""
+        until = time.monotonic() + SETTLE
+        try:
+            view = fresh or self.read(app, window)
             said = changes(view.title, before.lines, view.lines)
-            if said is None or not said.startswith("No change") or attempt == SETTLE_READS - 1:
-                break
-            time.sleep(SETTLE_WAIT)
+            if said and said.startswith("No change"):
+                time.sleep(max(0, until - time.monotonic()))
+                view = self.read(app, window)
+                said = changes(view.title, before.lines, view.lines)
+        except ToolError as error:
+            if error.code != "WINDOW_NOT_FOUND":
+                raise
+            self.views.pop(key, None)
+            return f"{before.title} closed. {self.titles(Engine.run('list-windows', '--app', app) or [])}"
         self.views[key] = view
-        return said if said and not whole else "\n".join(capped([f"Window: {view.title}.", *view.lines], MORE_NOTE))
+        return said if said and not whole else self.whole(view)
+
+    @staticmethod
+    def words(view, number):
+        kind = view.kinds.get(number)
+        return f"{number} {kind[0]} {kind[1]}".strip() if kind else None
+
+    @staticmethod
+    def kept(seen, view, number, rebuilt=False):
+        """The number that an element the agent saw has in a later reading of its window. It keeps its number as
+        long as that is an element of the same kind and name. In a window that was rebuilt under a step, that is
+        only sure if the window reads as it did. Otherwise it is the one element of that kind and name, if there
+        was one and is one."""
+        kind = seen.kinds.get(number)
+        if kind is None:
+            raise Gone(f"There is no element {number} in what you last read of this window.")
+        if view is seen or view.kinds.get(number) == kind and (not rebuilt or view.lines == seen.lines):
+            return number
+        was, now = ([at for at, other in kinds.items() if other == kind] for kinds in (seen.kinds, view.kinds))
+        if len(was) == len(now) == 1:
+            return now[0]
+        raise Gone("It is gone or has moved.")
 
     @staticmethod
     def named(view, name):
@@ -1317,7 +1414,7 @@ class Server:
                             "`on`.")
         return found[0] if found else None
 
-    def find_named(self, app, title, view, name):
+    def find_named(self, app, window, view, name):
         """Return the view an element with this name is in, and its number. The window is read again when it isn't
         there, and for a moment more: the model may not have looked, and a step before may be what brings it."""
         until = time.monotonic() + NAME_WAIT
@@ -1328,18 +1425,18 @@ class Server:
             if time.monotonic() > until:
                 raise ToolError(f"Nothing in {view.title} is named {quoted(str(name))}. Call look, with `find` if the "
                                 "window is long.")
-            view = self.read(app, title)
+            view = self.read(app, window)
             if self.named(view, name) is None:
                 time.sleep(WAIT_PACE)
 
-    def wait_for(self, app, title, view, step):
+    def wait_for(self, app, window, step):
         """Read the window until it shows a text, so the model needn't look again and again."""
         wanted, seconds = str(step.get("text") or ""), min(float(step.get("amount") or WAIT_DEFAULT), WAIT_LIMIT)
         if not wanted:
             raise ToolError("wait needs `text`: what the window should show.")
         until = time.monotonic() + seconds
         while True:
-            view = self.read(app, title)
+            view = self.read(app, window)
             if any(wanted.casefold() in line.casefold() for line in view.lines):
                 return view
             if time.monotonic() > until:
@@ -1367,7 +1464,7 @@ class Server:
             raise ToolError(f"{kind} needs `on`, a number from look, or `name`, the element's name.")
         ref = view.refs.get(number)
         if ref is None:
-            raise ToolError(f"There is no element {number}. {STALE_NOTE}")
+            raise Gone(f"There is no element {number} in what you last read of this window.")
         if kind in SIMPLE_STEPS:
             return {"command": kind, "args": {"ref_id": ref}}
         if kind in TEXT_STEPS:
@@ -1377,36 +1474,50 @@ class Server:
                                                   "amount": int(step.get("amount") or 3)}}
         raise ToolError(f"Unknown step {kind}.")
 
-    def run_steps(self, app, title, view, steps, index, ending, tried=None):
+    def run_steps(self, app, window, seen, view, steps, index, ending, tried=None):
         """Run a stretch of steps in one engine run, far faster than one run each, with the cursor going through them
         at about the same pace. Return the view and where the next step is. A step that names its element gets the
         number the element has now; one that isn't there yet ends the stretch, since the steps before may bring it.
-        If the window changed since it was read, the element's old number fails, and the name finds it again."""
-        entries, points, named = [], [], set()
+        A number is the element the agent saw under it, in `seen`, wherever a later reading has it. If the window
+        was rebuilt since, the engine no longer knows the element: it is found again in a new reading and the step
+        tried once more, which spares the agent an error, a look and a second act."""
+        entries, numbers, points, named = [], [], [], set()
         for at in range(index, ending):
             step = steps[at]
             try:
-                if step.get("on") is None and step.get("name") is not None and step.get("do") != "press":
+                number = step.get("on")
+                if step.get("do") != "press" and number is None and step.get("name") is not None:
                     if entries and self.named(view, step["name"]) is None:
                         raise ToolError("not there yet")
-                    view, number = self.find_named(app, title, view, step["name"])
-                    step = {**step, "on": number}
+                    view, number = self.find_named(app, window, view, step["name"])
                     named.add(at)
-                entries.append(self.entry(app, view, step))
-            except ToolError:
+                elif step.get("do") != "press" and number is not None:
+                    number = self.kept(seen, view, number, rebuilt=tried is not None)
+                entries.append(self.entry(app, view, {**step, "on": number}))
+            except ToolError as error:
                 if not entries:
+                    error.at = at
                     raise
                 ending = at
                 break
-            points += [view.points[step["on"]]] if step.get("on") in view.points else []
+            numbers.append(number)
+            points += [view.points[number]] if number in view.points else []
         threading.Thread(target=self.trail, args=(points,), daemon=True).start()
         ran, failure = Engine.batch(entries)
-        if failure and index + ran in named and index + ran != tried:
-            return self.run_steps(app, title, self.read(app, title), steps, index + ran, ending, tried=index + ran)
-        if failure:
-            raise ToolError(f"Step {index + ran + 1} failed: {failure}" + (f" The {index + ran} before it ran."
-                                                                          if index + ran else ""))
-        return view, ending
+        at, on = index + ran, self.words(view, numbers[ran]) if failure else None
+        try:
+            if failure and at != tried and (at in named or isinstance(failure, Gone)):
+                return self.run_steps(app, window, seen, self.read(app, window), steps, at, ending, tried=at)
+            if failure and failure.needs_place and steps[at].get("do") in GESTURES:
+                view, failure = self.click_where(app, window, view, numbers[ran], steps[at]), None
+                at += 1
+            if failure:
+                raise failure
+        except ToolError as error:
+            if error.at is None:
+                error.at, error.on = index + ran, on
+            raise
+        return self.run_steps(app, window, seen, view, steps, at, ending, tried) if at < ending else (view, ending)
 
     @staticmethod
     def is_shortcut(step):
@@ -1428,21 +1539,40 @@ class Server:
             self.windows.send({"cursorTo": point})
             time.sleep(CURSOR_PACE)
 
-    def click_at(self, app, title, key, view, step):
+    def on_screen(self, app, window, view):
         """A click by position needs a window on screen, which may move the app and with it every position."""
         if app_key(app) in self.hidden_apps and self.put_hidden_apps_on_desktop():
-            view = self.read(app, title)
+            return self.read(app, window)
+        return view
+
+    def click_at(self, app, window, view, step):
+        """Click a place in the window's picture, which has picture_scale pixels to a point."""
+        view = self.on_screen(app, window, view)
         frame = view.frame
         if not frame:
             raise ToolError("This window has no position to click.")
-        scale, margin_x, margin_y = self.shots.get(key, (2, 0, 0))
-        x = frame["x"] + step["xy"][0] / scale - margin_x
-        y = frame["y"] + step["xy"][1] / scale - margin_y
-        self.windows.send({"cursorTo": (x, y)})
-        _ran, failure = Engine.batch([{"command": "mouse-click", "args": {"xy": f"{x:.0f},{y:.0f}", "app": app}}])
-        if failure:
-            raise ToolError(failure)
+        scale = picture_scale(frame)
+        self.point_click(app, (frame["x"] + step["xy"][0] / scale, frame["y"] + step["xy"][1] / scale), step)
         return view
+
+    def click_where(self, app, window, view, number, step):
+        """Double, triple and right clicks go to where an element is when it doesn't take them as an action of its
+        own. They stay in the background, like any click by position. Return the view, which is a new reading if
+        the window had to move."""
+        moved = self.on_screen(app, window, view)
+        point, frame = moved.points.get(self.kept(view, moved, number)), moved.frame
+        if not point or not frame or not (frame["x"] <= point[0] < frame["x"] + frame["width"]
+                                          and frame["y"] <= point[1] < frame["y"] + frame["height"]):
+            raise ToolError("It takes that click only where it shows, and it is out of view. Scroll to it first.")
+        self.point_click(app, point, step)
+        return moved
+
+    def point_click(self, app, point, step):
+        self.windows.send({"cursorTo": point})
+        args = {"xy": f"{point[0]:.0f},{point[1]:.0f}", "app": app, **GESTURES.get(step.get("do"), {})}
+        _ran, failure = Engine.batch([{"command": "mouse-click", "args": args}])
+        if failure:
+            raise failure
 
     # --- turn ends and idle stops -----------------------------------------
     def hide_browsers(self):

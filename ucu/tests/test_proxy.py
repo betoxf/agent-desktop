@@ -38,7 +38,12 @@ class Proxy:
         self.tools = tools = Path(self.home.name) / "tools"
         tools.mkdir()
         (tools / "log").write_text(FAKE_LOG_COMMAND)
-        (tools / "log").chmod(0o755)
+        (tools / "screencapture").write_text(
+            '#!/bin/sh\necho "$@" > "$HOME/screencapture.args"\nfor last; do :; done\nprintf picture > "$last"\n')
+        (tools / "sips").write_text('#!/bin/sh\necho "$@" > "$HOME/sips.args"\n'
+                                    'while [ "$1" != "--out" ]; do last="$1"; shift; done\ncp "$last" "$2"\n')
+        for tool in ("log", "screencapture", "sips"):
+            (tools / tool).chmod(0o755)
         engine = Path(self.home.name) / ".local/bin/ucu-engine"
         engine.parent.mkdir(parents=True)
         engine.write_text(f'#!/bin/sh\nexec "{sys.executable}" -I "{FAKE}" "$@"\n')
@@ -258,30 +263,97 @@ class ServerTest(unittest.TestCase):
         reply = self.server.act({"do": "click", "name": "Item 400"}, app="Long")  # past what was shown
         self.assertEqual(self.server.batched()[0], {"command": "click", "args": {"ref_id": "@s1:e400"}})
 
-    def test_refuses_a_number_the_window_doesnt_have(self):
+    def test_refuses_a_number_the_window_doesnt_have_and_shows_what_the_steps_before_did(self):
         self.server.look()
         reply = self.server.act({"do": "click", "on": 1}, {"do": "click", "on": 7})
         self.assertTrue(reply["result"]["isError"])
         self.assertIn("Step 2 failed: There is no element 7", self.server.text(reply))
         self.assertIn("The 1 before it ran", self.server.text(reply))
+        self.assertIn("+ statictext 1, Description: Display", self.server.text(reply))  # no look needed to go on
+        self.assertEqual(self.server.text(self.server.look()), 'No change in "Calculator".')
 
-    def test_says_what_to_do_about_a_stale_element(self):
+    def test_shows_the_whole_window_for_a_number_it_never_had(self):
         self.server.look()
-        original = self.server.engine_log
+        text = self.server.text(self.server.act({"do": "click", "on": 7}))
+        self.assertIn('Step 1 failed: There is no element 7 in what you last read of this window.\nWindow: '
+                      '"Calculator".\nwindow Calculator', text)
+
+    def test_refuses_an_unknown_step_without_reading_the_window_again(self):
+        self.server.look()
         reply = self.server.act({"do": "bounce", "on": 1})
-        self.assertIn("Unknown step bounce", self.server.text(reply))
-        self.assertTrue(original.exists())
+        self.assertEqual(self.server.text(reply), "Step 1 failed: Unknown step bounce.")
+        self.assertEqual(len(self.server.engine_calls("snapshot")), 1)
+
+    def test_follows_a_numbered_element_into_a_rebuilt_window(self):
+        self.server.look(app="Rebuilt")
+        reply = self.server.act({"do": "click", "on": 71}, app="Rebuilt")
+        self.assertFalse(reply["result"]["isError"], self.server.text(reply))
+        self.assertEqual([entry["args"]["ref_id"] for entry in self.server.batched()], ["@s1:e71", "@s1:e72"])
+
+    def test_gives_a_number_the_element_it_had_when_the_agent_saw_it(self):
+        self.server.look(app="Rebuilt")
+        reply = self.server.act({"do": "wait", "text": "display"}, {"do": "click", "on": 71}, app="Rebuilt")
+        self.assertFalse(reply["result"]["isError"], self.server.text(reply))
+        self.assertEqual(self.server.batched()[0]["args"]["ref_id"], "@s1:e72")
+
+    def test_shows_the_window_when_a_steps_element_is_gone(self):
+        self.server.look(app="Stale")
+        reply = self.server.act({"do": "click", "on": 99}, app="Stale")
+        self.assertTrue(reply["result"]["isError"])
+        self.assertEqual(self.server.text(reply), 'Step 1 failed: 99 button Old is gone or has moved.\n'
+                         'Diff of "Stale" (+ new or changed, - gone):\n- 99 button Old')
+
+    def test_says_an_engine_error_in_its_own_words(self):
+        self.server.look()
+        text = self.server.text(self.server.act({"do": "expand", "on": 1}))
+        self.assertEqual(text, "Step 1 failed: 1 button Add can't do that: Expand is not available.")
+        missing = self.server.text(self.server.look(app="Nowhere"))
+        self.assertIn("No running application matches 'Nowhere'. Use the name the app shows in its menu bar", missing)
+        self.assertNotIn("list-apps", missing)
+
+    def test_double_clicks_where_an_element_is_when_it_takes_no_such_action(self):
+        self.server.look()
+        reply = self.server.act({"do": "double-click", "on": 1}, {"do": "click", "on": 1})
+        self.assertFalse(reply["result"]["isError"], self.server.text(reply))
+        self.assertEqual(self.server.batched()[2:], [
+            {"command": "mouse-click", "args": {"xy": "120,210", "app": "Calculator", "count": 2}},
+            {"command": "click", "args": {"ref_id": "@s1:e1"}}])
+
+    def test_reads_a_window_without_a_change_once_more_and_no_more(self):
+        self.server.look()
+        started = time.monotonic()
+        self.assertEqual(self.server.text(self.server.act({"do": "focus", "on": 1})), 'No change in "Calculator".')
+        self.assertGreater(time.monotonic() - started, 0.4)  # the app had its moment to show a change
+        self.assertEqual(len(self.server.engine_calls("snapshot")), 3)
+        self.server.act({"do": "click", "on": 1})
+        self.assertEqual(len(self.server.engine_calls("snapshot")), 4)
+
+    def test_ends_on_the_reading_of_a_wait(self):
+        self.server.look()
+        text = self.server.text(self.server.act({"do": "click", "on": 1}, {"do": "wait", "text": "display"}))
+        self.assertIn("+ statictext 1, Description: Display", text)
+        self.assertEqual(len(self.server.engine_calls("snapshot")), 2)
+
+    def test_says_that_the_steps_closed_the_window(self):
+        self.server.look(app="Closing", window="Two")
+        reply = self.server.call("act", app="Closing", window="Two", steps=[{"do": "click", "on": 1}])
+        self.assertFalse(reply["result"]["isError"])
+        self.assertEqual(self.server.text(reply), '"Closing" closed. Windows: "One", "Two"')
 
     def test_turns_screenshot_pixels_into_a_place_on_screen(self):
         self.server.look(screenshot=True)
-        reply = self.server.act({"do": "click", "xy": [100, 60]})
+        reply = self.server.act({"do": "click", "xy": [100, 60]}, {"do": "right-click", "xy": [0, 0]})
         self.assertFalse(reply["result"]["isError"])
-        # (692 / 2 - 300) / 2 = 23 points of shadow around the window at 100,200
-        self.assertEqual(self.server.batched()[0]["args"], {"xy": "127,207", "app": "Calculator"})
+        # the picture is the window at 100,200, a pixel to a point
+        self.assertEqual([entry["args"] for entry in self.server.batched()], [
+            {"xy": "200,260", "app": "Calculator"}, {"xy": "100,200", "app": "Calculator", "button": "right"}])
 
-    def test_adds_a_screenshot_when_asked(self):
+    def test_adds_a_screenshot_the_size_of_the_window_when_asked(self):
         content = self.server.look(screenshot=True)["result"]["content"]
-        self.assertEqual(content[1], {"type": "image", "data": "cGljdHVyZQ==", "mimeType": "image/png"})
+        self.assertEqual(content[1], {"type": "image", "data": "cGljdHVyZQ==", "mimeType": "image/jpeg"})
+        home = Path(self.server.home.name)
+        self.assertIn("-l1", (home / "screencapture.args").read_text().split())
+        self.assertIn("-z 400 300", (home / "sips.args").read_text())
 
     def test_picks_a_window_by_title(self):
         self.server.look(app="Many", window="Two")
@@ -299,6 +371,7 @@ class ServerTest(unittest.TestCase):
         self.assertFalse(reply["result"]["isError"])
         self.assertIn('Window: "Many".\nwindow Many\n\tstatictext 1, Description: Display', self.server.text(reply))
         self.assertTrue(all(call[-2:] == ["--window-id", "w-2"] for call in self.server.engine_calls("snapshot")))
+        self.assertEqual(len(self.server.engine_calls("list-windows")), 1)  # found once, not at every read
 
     def test_answers_when_ucu_itself_fails(self):
         reply = self.server.look(app="Broken")

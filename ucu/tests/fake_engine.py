@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Stand-in for agent-desktop in tests: logs its arguments and answers like the real one, without touching any app.
 
-The window has a display and two buttons. Each click changes the display, so a look after it finds a change. A ref ending
-in e99 is stale, and pressing cmd+k fails as in a hidden app, which has no focused field. An app called "Slow" takes a
-while, "Many" has two windows, "Twins" two buttons called Add, "Long" 400 more buttons, and "Broken" answers with a
-snapshot ucu can't read. "Rebuilt" has a button called Fresh that is a new element at every read, and the one from
-the first read is gone. After two clicks every window has a button called Later. Google Chrome has two windows with
-the same title: the user's, and one where ucu puts the agent's on the fake desktop.
+The window has a display and two buttons. Each step changes the display, so a look after it finds a change, except
+`focus`, which changes nothing. Pressing cmd+k fails as in a hidden app, which has no focused field. No element expands,
+and none takes a double click except where it is on screen. An app called "Slow" takes a while, "Many" has two windows,
+"Twins" two buttons called Add, "Long" 400 more buttons, and "Broken" answers with a snapshot ucu can't read. "Rebuilt"
+has a button called Fresh that is a new element at every read, and the one from the first read is gone. "Stale" has a
+button called Old at its first read only. "Closing" loses its second window at the first step. After two clicks every
+window has a button called Later. Google Chrome has two windows with the same title: the user's, and one where ucu puts
+the agent's on the fake desktop.
 """
 import json
 import os
@@ -42,9 +44,13 @@ def snapshot(app):
         reads = LOG.with_name("rebuilt")
         reads.write_text(str(int(reads.read_text()) + 1 if reads.exists() else 1))
         extra = [{"role": "button", "name": "Fresh", "ref_id": f"@s1:e{70 + int(reads.read_text())}"}]
+    if app == "Stale":
+        reads = LOG.with_name("stale")
+        extra = [] if reads.exists() else [{"role": "button", "name": "Old", "ref_id": "@s1:e99"}]
+        reads.touch()
     if clicks() >= 2:  # something that only shows after two clicks
         extra.append({"role": "button", "name": "Later", "ref_id": "@s1:e5", "available_actions": ["Click"]})
-    return {"app": app, "window": {"title": app}, "tree": {
+    return {"app": app, "window": {"title": app, "id": "w-1"}, "tree": {
         "role": "window", "name": app, "bounds": {"x": 100.0, "y": 200.0, "width": 300.0, "height": 400.0}, "children": [
             {"role": "group", "children": [
                 {"role": "statictext", "name": str(clicks()), "description": "Display"},
@@ -65,6 +71,12 @@ def main():
             reply(error={"code": "AMBIGUOUS_TARGET", "message": "Several windows match"})
         elif app == "Broken":
             reply("not a snapshot")
+        elif app == "Nowhere":
+            reply(error={"code": "APP_NOT_FOUND", "message": "No running application matches 'Nowhere'",
+                         "suggestion": "Run 'list-apps' to see running applications, or launch the app first."})
+        elif app == "Closing" and clicks():
+            reply(error={"code": "WINDOW_NOT_FOUND", "message": "No window with id w-2",
+                         "suggestion": "Run 'list-windows' to see available window IDs."})
         else:
             reply(snapshot(app))
     elif command == "list-windows" and arguments[arguments.index("--app") + 1] == "Google Chrome":
@@ -74,9 +86,6 @@ def main():
                 "bounds": {"x": -1900, "y": -1160, "width": 1280, "height": 900}}])
     elif command == "list-windows":  # the real engine's data is the list itself
         reply([{"id": "w-1", "title": "One"}, {"id": "w-2", "title": "Two"}])
-    elif command == "screenshot":
-        Path(arguments[1]).write_bytes(b"picture")
-        reply({"format": "png", "width": 692, "height": 892, "scale_factor": 2.0, "path": arguments[1]})
     elif command == "batch":
         results = []
         for entry in json.loads(arguments[1]):
@@ -84,10 +93,25 @@ def main():
                 results.append({"ok": False, "command": entry["command"],
                                 "error": {"code": "STALE_REF", "message": "That ref is stale"}})
                 break
-            if entry["args"].get("ref_id") == "@s1:e71":
+            if entry["args"].get("ref_id") == "@s1:e71":  # as the real engine says it of an element that is gone
                 results.append({"ok": False, "command": entry["command"], "error": {
-                    "code": "ACTION_FAILED", "message": "Accessibility surface read failed for AXRole"}})
+                    "code": "APP_UNRESPONSIVE", "message": "Accessibility surface read failed for AXRole",
+                    "suggestion": "Retry after the application finishes updating its accessibility surfaces",
+                    "details": {"ax_error": -25202}}})
                 break
+            if entry["command"] in ("expand", "double-click"):
+                reason = {"expand": "Expand is not available",
+                          "double-click": "semantic gesture is unavailable and physical fallback is denied"}
+                results.append({"ok": False, "command": entry["command"], "error": {
+                    "code": "ACTION_NOT_SUPPORTED", "message": "Target is not actionable: supported_action",
+                    "suggestion": "Target an element that advertises the action (check available_actions in a "
+                                  "fresh snapshot).",
+                    "details": {"checks": [{"check": "enabled", "status": "pass"}, {
+                        "check": "supported_action", "status": "fail", "reason": reason[entry["command"]]}]}}})
+                break
+            if entry["command"] == "focus":
+                results.append({"ok": True, "command": "focus", "data": {}})
+                continue
             if entry["command"] == "press" and entry["args"].get("combo") == "cmd+k":  # like a hidden app
                 results.append({"ok": False, "command": "press", "error": {
                     "code": "ACTION_FAILED", "message": "Application has no verified focused element"}})

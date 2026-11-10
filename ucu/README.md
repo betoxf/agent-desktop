@@ -35,8 +35,11 @@ One M3 Max with macOS 27.2, on apps on the private desktop. Run it yourself with
 | Start the server | 45 ms |
 | Read a small window (Calculator) | 260 ms |
 | Tokens to read a small window | 169 |
-| A task: `12 + 34 =` and read the answer | 1.8 s |
-| The same task by the buttons' names | 1.8 s, in one call instead of a look and an act |
+| A click, and reading what it changed | 0.5 s |
+| A task: `12 + 34 =` and read the answer | 1.5 s |
+| The same task by the buttons' names | 1.5 s, in one call instead of a look and an act |
+| A step that changes nothing | 0.9 s |
+| A look with a screenshot | 0.4 s, a 21 KB picture |
 | Read a large window (Font Book) | 1.1 s |
 | Tokens to read a large window | 1,403 |
 | Tokens to find one thing in it with `find` | 86 |
@@ -44,7 +47,8 @@ One M3 Max with macOS 27.2, on apps on the private desktop. Run it yourself with
 | Server memory | 23 MB, plus about 20 MB for each chat's engine while it runs |
 
 Tokens are estimated as characters / 4. On a long web page, a Wikipedia article in Chrome, a `look` is 4,150 tokens
-where the whole tree is 12,454, a `find` in it 63, and the page's first 300 links and controls are 4,285.
+where the whole tree is 12,454, a `find` in it 63, and the page's first 300 links and controls are 4,285. A step
+that changes nothing on that page takes 1.1 s, and a screenshot of its 1280 x 900 window is 290 KB.
 
 ## Before you use it
 
@@ -141,6 +145,18 @@ looked up in the window as it is now, waited for briefly if a step before brings
 changed under it. A name that fits several elements fails with their numbers. `menu` works on an app in the background,
 even a hidden one, and a wrong path answers with what that menu holds. An `act` on a window the model hasn't read
 returns the window, not a diff. A text that only repeats the element it is in, as a link's does, is left out.
+
+A number means the element the model saw under it. If the window was rebuilt since, UCU finds that element in the window
+as it is now and tries the step once more. A step that still fails says which element and why, in terms of these tools
+and not the engine's. When steps before it ran, or its number is out of date, the window as it is now comes with the
+error, so the model goes on without a `look`. `double-click`, `triple-click` and `right-click` go to where an element is
+when it takes no such action of its own, still in the background. A step that closes its window answers that it
+closed. A window named by its title is found once per call, so a step that changes the title, as a page that loads
+does, doesn't lose it.
+
+A screenshot is the window without its shadow, as a JPEG of one pixel per point. A window larger than models read as it
+is (1568 pixels on the long side, 1.15 megapixels) gets fewer. So a client doesn't shrink the picture, and `xy` is the
+place the model sees.
 
 When an app rejects an input it plays the macOS alert sound, which a person hears but an agent can't. UCU watches the
 system sound server's log and adds a note to the result. It needs no permission and hears no audio. New windows work the
